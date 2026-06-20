@@ -222,6 +222,30 @@ else
     exit 1
 fi
 
+# 12. Test Simulated WebUI Apply (mimic human browser submission)
+echo "Testing simulated WebUI Apply (mimicking human browser action)..."
+JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=split2 --dpi-desync-fooling=md5sig","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
+
+$SSH_CMD "echo '$JSON_PAYLOAD' | jq -r 'to_entries | .[] | \"\(.key) \(.value)\"' > /jffs/addons/custom_settings.txt"
+$SSH_CMD "/jffs/scripts/zapret service_event"
+
+# Verify nfqws daemon started via WebUI JSON
+if $SSH_CMD 'pidof nfqws >/dev/null'; then
+    echo -e "${GREEN}[PASS] Simulated WebUI Apply started nfqws successfully${NC}"
+else
+    echo -e "${RED}[FAIL] Simulated WebUI Apply failed to start nfqws${NC}"
+    exit 1
+fi
+
+# Verify hostlist populated correctly
+SIM_HOSTS=$($SSH_CMD 'cat /jffs/addons/zapret/hostlist.txt')
+if echo "$SIM_HOSTS" | grep -q "medium.com" && echo "$SIM_HOSTS" | grep -q "steampowered.com"; then
+    echo -e "${GREEN}[PASS] Simulated WebUI Apply generated correct hostlist.txt${NC}"
+else
+    echo -e "${RED}[FAIL] Simulated WebUI Apply hostlist verification failed${NC}"
+    exit 1
+fi
+
 # Restore default disabled config and stop daemons to prevent routing disruption
 echo "Cleaning up router active state (disabling and stopping redirects)..."
 $SSH_CMD '
