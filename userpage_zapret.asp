@@ -21,16 +21,19 @@
 <script type="text/javascript" src="/validator.js"></script>
 <script type="text/javascript" src="/user/zapret/config.js"></script>
 <script>
-var config = window.zapret_config || {
-    enabled: "0",
-    mode: "nfqws",
-    tpws_enabled: "0",
-    tpws_port: "10080",
-    tpws_args: "--fooling=md5sig",
-    nfqws_enabled: "0",
-    nfqws_args: "--fooling=md5sig",
-    nfqws_queue: "200",
-    hostlist_mode: "all"
+var custom_settings = <% get_custom_settings(); %> || {};
+
+var config = {
+    enabled: custom_settings.zapret_enabled || "0",
+    mode: custom_settings.zapret_mode || "nfqws",
+    tpws_enabled: custom_settings.zapret_tpws_enabled || "0",
+    tpws_port: custom_settings.zapret_tpws_port || "10080",
+    tpws_args: custom_settings.zapret_tpws_args || "--fooling=md5sig",
+    nfqws_enabled: custom_settings.zapret_nfqws_enabled || "0",
+    nfqws_args: custom_settings.zapret_nfqws_args || "--fooling=md5sig",
+    nfqws_queue: custom_settings.zapret_nfqws_queue || "200",
+    hostlist_mode: custom_settings.zapret_hostlist_mode || "all",
+    hostlist_raw: custom_settings.zapret_hostlist_raw || ""
 };
 
 function SetCurrentPage() {
@@ -48,22 +51,21 @@ function initial() {
         $("#ui_zapret_mode").val("disabled");
     }
     
-    $("#ui_tpws_port").val(config.tpws_port || "10080");
-    $("#ui_tpws_args").val(config.tpws_args || "--fooling=md5sig");
-    $("#ui_nfqws_queue").val(config.nfqws_queue || "200");
-    $("#ui_nfqws_args").val(config.nfqws_args || "--fooling=md5sig");
-    $("#ui_hostlist_mode").val(config.hostlist_mode || "all");
+    $("#ui_tpws_port").val(config.tpws_port);
+    $("#ui_tpws_args").val(config.tpws_args);
+    $("#ui_nfqws_queue").val(config.nfqws_queue);
+    $("#ui_nfqws_args").val(config.nfqws_args);
+    $("#ui_hostlist_mode").val(config.hostlist_mode);
     
-    $.get("/user/zapret/hostlist.txt")
-        .done(function(data) {
-            $("#ui_hostlist_txt").val(data);
-        })
-        .fail(function() {
-            $("#ui_hostlist_txt").val("");
-        });
+    if (config.hostlist_raw) {
+        $("#ui_hostlist_txt").val(config.hostlist_raw.split(",").join("\n"));
+    } else {
+        $("#ui_hostlist_txt").val("");
+    }
         
     changeMode();
 }
+
 
 function changeMode() {
     var modeVal = $("#ui_zapret_mode").val();
@@ -107,16 +109,15 @@ function changeHostlistMode() {
 
 function applyRule() {
     var modeVal = $("#ui_zapret_mode").val();
-    if (modeVal === "disabled") {
-        $("#zapret_enabled").val("0");
-        $("#zapret_mode").val("nfqws");
-        $("#zapret_tpws_enabled").val("0");
-        $("#zapret_nfqws_enabled").val("0");
-    } else if (modeVal === "tpws") {
-        $("#zapret_enabled").val("1");
-        $("#zapret_mode").val("tpws");
-        $("#zapret_tpws_enabled").val("1");
-        $("#zapret_nfqws_enabled").val("0");
+    var enabled = "0";
+    var mode = "nfqws";
+    var tpws_enabled = "0";
+    var nfqws_enabled = "0";
+    
+    if (modeVal === "tpws") {
+        enabled = "1";
+        mode = "tpws";
+        tpws_enabled = "1";
         
         var port = parseInt($("#ui_tpws_port").val(), 10);
         if (isNaN(port) || port < 1 || port > 65535) {
@@ -124,10 +125,9 @@ function applyRule() {
             return;
         }
     } else if (modeVal === "nfqws") {
-        $("#zapret_enabled").val("1");
-        $("#zapret_mode").val("nfqws");
-        $("#zapret_tpws_enabled").val("0");
-        $("#zapret_nfqws_enabled").val("1");
+        enabled = "1";
+        mode = "nfqws";
+        nfqws_enabled = "1";
         
         var queue = parseInt($("#ui_nfqws_queue").val(), 10);
         if (isNaN(queue) || queue < 1 || queue > 65535) {
@@ -136,24 +136,30 @@ function applyRule() {
         }
     }
     
-    $("#zapret_tpws_port").val($("#ui_tpws_port").val());
-    $("#zapret_tpws_args").val($("#ui_tpws_args").val());
-    $("#zapret_nfqws_queue").val($("#ui_nfqws_queue").val());
-    $("#zapret_nfqws_args").val($("#ui_nfqws_args").val());
-    
     var hostlistMode = $("#ui_hostlist_mode").val();
-    $("#zapret_hostlist_mode").val(hostlistMode);
+    var cleanList = "";
     
     if (hostlistMode === "custom") {
         var rawList = $("#ui_hostlist_txt").val() || "";
-        var cleanList = rawList.split("\n")
+        cleanList = rawList.split("\n")
             .map(function(line) { return line.trim(); })
             .filter(function(line) { return line.length > 0 && !line.startsWith("#"); })
             .join(",");
-        $("#zapret_hostlist_raw").val(cleanList);
-    } else {
-        $("#zapret_hostlist_raw").val("");
     }
+    
+    // Package custom settings into the required amng_custom JSON variable
+    custom_settings["zapret_enabled"] = enabled;
+    custom_settings["zapret_mode"] = mode;
+    custom_settings["zapret_tpws_enabled"] = tpws_enabled;
+    custom_settings["zapret_tpws_port"] = $("#ui_tpws_port").val();
+    custom_settings["zapret_tpws_args"] = $("#ui_tpws_args").val();
+    custom_settings["zapret_nfqws_enabled"] = nfqws_enabled;
+    custom_settings["zapret_nfqws_args"] = $("#ui_nfqws_args").val();
+    custom_settings["zapret_nfqws_queue"] = $("#ui_nfqws_queue").val();
+    custom_settings["zapret_hostlist_mode"] = hostlistMode;
+    custom_settings["zapret_hostlist_raw"] = cleanList;
+    
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     
     showLoading(5);
     document.form.submit();
