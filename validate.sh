@@ -222,6 +222,26 @@ else
     exit 1
 fi
 
+# Restore default disabled config and stop daemons to prevent routing disruption
+echo "Cleaning up router active state (disabling and stopping redirects)..."
+$SSH_CMD '
+    cat <<EOF > /jffs/addons/zapret/config.json
+{
+  "enabled": "0",
+  "mode": "nfqws",
+  "tpws_enabled": "0",
+  "tpws_port": "10080",
+  "tpws_args": "--fooling=md5sig",
+  "nfqws_enabled": "0",
+  "nfqws_args": "--fooling=md5sig",
+  "nfqws_queue": "200",
+  "hostlist_mode": "all"
+}
+EOF
+    /jffs/scripts/zapret stop
+    rm -f /jffs/addons/zapret/hostlist.txt
+'
+
 # Cleanup install dir on router
 $SSH_CMD "rm -rf /tmp/zapret-install"
 
