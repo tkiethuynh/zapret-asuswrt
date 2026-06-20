@@ -1,0 +1,49 @@
+name: Release Zapret Asuswrt-Merlin Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and process Zapret release
+        run: |
+          # Fetch the latest release info from bol-van/zapret
+          API_URL="https://api.github.com/repos/bol-van/zapret/releases/latest"
+          ASSET_URL=$(curl -s "$API_URL" | grep -o 'https://github.com/bol-van/zapret/releases/download/[^"]*/zapret-[v0-9.]*\.tar\.gz' | head -n 1)
+          echo "Downloading from: $ASSET_URL"
+          curl -L "$ASSET_URL" -o zapret.tar.gz
+          
+          # Extract the archive
+          mkdir zapret-extracted
+          tar -C zapret-extracted -xzf zapret.tar.gz --strip-components=1
+          
+          # Prepare target directory structure
+          mkdir -p zapret-merlin/binaries
+          
+          # Copy linux-arm and linux-arm64 binaries
+          cp -r zapret-extracted/binaries/linux-arm zapret-merlin/binaries/
+          cp -r zapret-extracted/binaries/linux-arm64 zapret-merlin/binaries/
+          
+          # Copy our script/config files
+          cp install.sh zapret userpage_zapret.asp config.json zapret-merlin/
+          
+          # Package it
+          tar -czf zapret-merlin.tar.gz -C zapret-merlin .
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zapret-merlin.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

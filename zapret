@@ -1,0 +1,326 @@
+#!/bin/sh
+
+# Zapret Control Script for Asuswrt-Merlin
+# Target installation path: /jffs/scripts/zapret
+
+CONFIG_FILE="/jffs/addons/zapret/config.json"
+PID_DIR="/tmp/var/run"
+
+get_json_val() {
+    local key="$1"
+    local file="$2"
+    if [ -f "$file" ]; then
+        grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" | head -n 1 | cut -d'"' -f4
+    fi
+}
+
+start() {
+    mkdir -p "$PID_DIR"
+    
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "Configuration file $CONFIG_FILE not found. Cannot start." >&2
+        return 1
+    fi
+    
+    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+    if [ "$enabled" != "1" ]; then
+        echo "Zapret is disabled in config.json. Use WebUI to enable."
+        return 0
+    fi
+    
+    local mode=$(get_json_val "mode" "$CONFIG_FILE")
+    local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
+    local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
+    local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
+    local nfqws_args=$(get_json_val "nfqws_args" "$CONFIG_FILE")
+    local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
+    
+    local hostlist_arg=""
+    if [ "$hostlist_mode" = "custom" ] && [ -f "/jffs/addons/zapret/hostlist.txt" ]; then
+        hostlist_arg="--hostlist=/jffs/addons/zapret/hostlist.txt"
+    fi
+
+    if [ "$mode" = "tpws" ]; then
+        # Check if tpws is already running
+        if pidof tpws >/dev/null 2>&1; then
+            echo "tpws is already running."
+        else
+            echo "Starting tpws on port $tpws_port..."
+            local tpws_args_processed=$(echo "$tpws_args" | sed 's/--fooling=[^ ]*//g')
+            /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/dev/null 2>&1 &
+            echo $! > "$PID_DIR/zapret_tpws.pid"
+            sleep 1
+        fi
+        
+        # Apply iptables rules for tpws (nat redirect)
+        echo "Applying iptables rules for tpws..."
+        iptables -t nat -N ZAPRET 2>/dev/null
+        iptables -t nat -F ZAPRET
+        iptables -t nat -A ZAPRET -p tcp --dport 80 -j REDIRECT --to-ports "$tpws_port"
+        iptables -t nat -A ZAPRET -p tcp --dport 443 -j REDIRECT --to-ports "$tpws_port"
+        
+        iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+        iptables -t nat -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
+        
+    elif [ "$mode" = "nfqws" ]; then
+        # Check if nfqws is already running
+        if pidof nfqws >/dev/null 2>&1; then
+            echo "nfqws is already running."
+        else
+            echo "Starting nfqws on queue $nfqws_queue..."
+            local nfqws_args_processed=$(echo "$nfqws_args" | sed 's/--fooling=/--dpi-desync-fooling=/g')
+            /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/dev/null 2>&1 &
+            echo $! > "$PID_DIR/zapret_nfqws.pid"
+            sleep 1
+        fi
+        
+        # Apply iptables rules for nfqws (mangle NFQUEUE)
+        echo "Applying iptables rules for nfqws..."
+        iptables -t mangle -N ZAPRET 2>/dev/null
+        iptables -t mangle -F ZAPRET
+        iptables -t mangle -A ZAPRET -p tcp --dport 80 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
+        iptables -t mangle -A ZAPRET -p tcp --dport 443 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
+        
+        iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+        iptables -t mangle -I FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
+        
+        iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+        iptables -t mangle -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
+    else
+        echo "Unknown mode: $mode" >&2
+        return 1
+    fi
+    echo "Zapret started successfully."
+}
+
+stop() {
+    echo "Stopping Zapret processes..."
+    killall tpws 2>/dev/null
+    killall nfqws 2>/dev/null
+    rm -f "$PID_DIR/zapret_tpws.pid" "$PID_DIR/zapret_nfqws.pid"
+    
+    echo "Cleaning up iptables rules..."
+    iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+    iptables -t nat -F ZAPRET 2>/dev/null
+    iptables -t nat -X ZAPRET 2>/dev/null
+    
+    iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+    iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+    iptables -t mangle -F ZAPRET 2>/dev/null
+    iptables -t mangle -X ZAPRET 2>/dev/null
+    
+    echo "Zapret stopped."
+}
+
+status() {
+    local tpws_pids=$(pidof tpws)
+    local nfqws_pids=$(pidof nfqws)
+    
+    echo "=== Zapret Daemon Status ==="
+    if [ -n "$tpws_pids" ]; then
+        echo "tpws:  running (PID: $tpws_pids)"
+    else
+        echo "tpws:  stopped"
+    fi
+    
+    if [ -n "$nfqws_pids" ]; then
+        echo "nfqws: running (PID: $nfqws_pids)"
+    else
+        echo "nfqws: stopped"
+    fi
+    
+    echo ""
+    echo "=== iptables Active Rules ==="
+    if iptables -t nat -S 2>/dev/null | grep -q "ZAPRET"; then
+        echo "nat redirection rules: ACTIVE"
+        iptables -t nat -S ZAPRET 2>/dev/null
+    else
+        echo "nat redirection rules: INACTIVE"
+    fi
+    
+    if iptables -t mangle -S 2>/dev/null | grep -q "ZAPRET"; then
+        echo "mangle queue rules: ACTIVE"
+        iptables -t mangle -S ZAPRET 2>/dev/null
+    else
+        echo "mangle queue rules: INACTIVE"
+    fi
+}
+
+webui() {
+    # Find available slot (user1 to user20)
+    local slot=""
+    local i
+    local i=1
+    while [ $i -le 20 ]; do
+        local title_file="/tmp/var/wwwext/user${i}.title"
+        local asp_file="/tmp/var/wwwext/user${i}.asp"
+        if [ ! -f "$title_file" ] && [ ! -f "$asp_file" ]; then
+            slot="user${i}"
+            break
+        elif [ -f "$title_file" ] && [ "$(cat "$title_file")" = "Zapret" ]; then
+            slot="user${i}"
+            break
+        fi
+        i=$((i+1))
+    done
+    
+    if [ -z "$slot" ]; then
+        echo "Error: No available WebUI slots (user1-user20) found." >&2
+        return 1
+    fi
+    
+    echo "Injecting WebUI into slot: $slot"
+    
+    # Copy and configure WebUI ASP
+    mkdir -p /tmp/var/wwwext
+    if [ -f /jffs/addons/zapret/userpage_zapret.asp ]; then
+        sed "s/%%USER_ASP%%/${slot}.asp/g" /jffs/addons/zapret/userpage_zapret.asp > /tmp/var/wwwext/${slot}.asp
+        echo -n "Zapret" > /tmp/var/wwwext/${slot}.title
+    else
+        echo "Error: /jffs/addons/zapret/userpage_zapret.asp not found." >&2
+        return 1
+    fi
+    
+    # Generate WebUI JS config
+    mkdir -p /tmp/var/wwwext/zapret
+    if [ -f /jffs/addons/zapret/config.json ]; then
+        echo -n "var zapret_config = " > /tmp/var/wwwext/zapret/config.js
+        cat /jffs/addons/zapret/config.json >> /tmp/var/wwwext/zapret/config.js
+        echo ";" >> /tmp/var/wwwext/zapret/config.js
+    else
+        echo "var zapret_config = {enabled: \"0\", mode: \"nfqws\", tpws_enabled: \"0\", tpws_port: \"10080\", tpws_args: \"--fooling=md5sig\", nfqws_enabled: \"0\", nfqws_args: \"--fooling=md5sig\", nfqws_queue: \"200\", hostlist_mode: \"all\"};" > /tmp/var/wwwext/zapret/config.js
+    fi
+    
+    # Link hostlist file for WebUI access
+    if [ -f /jffs/addons/zapret/hostlist.txt ]; then
+        ln -sf /jffs/addons/zapret/hostlist.txt /tmp/var/wwwext/zapret/hostlist.txt
+    else
+        rm -f /tmp/var/wwwext/zapret/hostlist.txt
+        touch /tmp/var/wwwext/zapret/hostlist.txt
+    fi
+    
+    # Unmount if already bind-mounted
+    if mount | grep -q "/www/require/modules/menuTree.js"; then
+        umount -l /www/require/modules/menuTree.js 2>/dev/null || umount /www/require/modules/menuTree.js 2>/dev/null
+    fi
+    
+    # Inject into menuTree.js after NATPassThrough tab (menu_WAN)
+    awk -v slot="${slot}.asp" '
+    {
+        print $0
+        if ($0 ~ /Advanced_NATPassThrough_Content.asp/) {
+            print "\t\t{url: \"" slot "\", tabName: \"Zapret\"},"
+        }
+    }' /www/require/modules/menuTree.js > /tmp/menuTree.js
+    
+    # Mount modified menuTree
+    mount --bind /tmp/menuTree.js /www/require/modules/menuTree.js
+    
+    echo "WebUI injection complete."
+}
+
+service_event() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        mkdir -p /jffs/addons/zapret
+        cat <<EOF > "$CONFIG_FILE"
+{
+  "enabled": "0",
+  "mode": "nfqws",
+  "tpws_enabled": "0",
+  "tpws_port": "10080",
+  "tpws_args": "--fooling=md5sig",
+  "nfqws_enabled": "0",
+  "nfqws_args": "--fooling=md5sig",
+  "nfqws_queue": "200",
+  "hostlist_mode": "all"
+}
+EOF
+    fi
+    
+    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+    local mode=$(get_json_val "mode" "$CONFIG_FILE")
+    local tpws_enabled=$(get_json_val "tpws_enabled" "$CONFIG_FILE")
+    local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
+    local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
+    local nfqws_enabled=$(get_json_val "nfqws_enabled" "$CONFIG_FILE")
+    local nfqws_args=$(get_json_val "nfqws_args" "$CONFIG_FILE")
+    local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
+    local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
+    local hostlist_raw=""
+    
+    if [ -f /jffs/addons/custom_settings.txt ]; then
+        while read -r line || [ -n "$line" ]; do
+            case "$line" in
+                zapret_enabled*) enabled=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_mode*) mode=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_tpws_enabled*) tpws_enabled=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_tpws_port*) tpws_port=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_tpws_args*) tpws_args=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_nfqws_enabled*) nfqws_enabled=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_nfqws_args*) nfqws_args=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_nfqws_queue*) nfqws_queue=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_hostlist_mode*) hostlist_mode=$(echo "$line" | cut -d' ' -f2-) ;;
+                zapret_hostlist_raw*) hostlist_raw=$(echo "$line" | cut -d' ' -f2-) ;;
+            esac
+        done < /jffs/addons/custom_settings.txt
+    fi
+    
+    # Remove our keys from custom_settings.txt
+    if [ -f /jffs/addons/custom_settings.txt ]; then
+        grep -v "^zapret_" /jffs/addons/custom_settings.txt > /tmp/custom_settings.txt.tmp
+        mv /tmp/custom_settings.txt.tmp /jffs/addons/custom_settings.txt
+    fi
+    
+    # Rewrite config.json
+    cat <<EOF > "$CONFIG_FILE"
+{
+  "enabled": "${enabled}",
+  "mode": "${mode}",
+  "tpws_enabled": "${tpws_enabled}",
+  "tpws_port": "${tpws_port}",
+  "tpws_args": "${tpws_args}",
+  "nfqws_enabled": "${nfqws_enabled}",
+  "nfqws_args": "${nfqws_args}",
+  "nfqws_queue": "${nfqws_queue}",
+  "hostlist_mode": "${hostlist_mode}"
+}
+EOF
+
+    # Handle host list
+    if [ "$hostlist_mode" = "custom" ]; then
+        echo "$hostlist_raw" | tr ',' '\n' | sed '/^[[:space:]]*$/d' > /jffs/addons/zapret/hostlist.txt
+    else
+        rm -f /jffs/addons/zapret/hostlist.txt
+    fi
+    
+    # Apply new settings
+    stop
+    start
+    webui
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    webui)
+        webui
+        ;;
+    service_event)
+        service_event
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|webui|service_event}"
+        exit 1
+        ;;
+esac
