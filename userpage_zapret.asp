@@ -23,17 +23,16 @@
 <script>
 var custom_settings = <% get_custom_settings(); %> || {};
 
-var config = {
-    enabled: custom_settings.zapret_enabled || "0",
-    mode: custom_settings.zapret_mode || "nfqws",
-    tpws_enabled: custom_settings.zapret_tpws_enabled || "0",
-    tpws_port: custom_settings.zapret_tpws_port || "10080",
-    tpws_args: custom_settings.zapret_tpws_args || "--fooling=md5sig",
-    nfqws_enabled: custom_settings.zapret_nfqws_enabled || "0",
-    nfqws_args: custom_settings.zapret_nfqws_args || "--fooling=md5sig",
-    nfqws_queue: custom_settings.zapret_nfqws_queue || "200",
-    hostlist_mode: custom_settings.zapret_hostlist_mode || "all",
-    hostlist_raw: custom_settings.zapret_hostlist_raw || ""
+var config = window.zapret_config || {
+    enabled: "0",
+    mode: "nfqws",
+    tpws_enabled: "0",
+    tpws_port: "10080",
+    tpws_args: "--fooling=md5sig",
+    nfqws_enabled: "0",
+    nfqws_args: "--fooling=md5sig",
+    nfqws_queue: "200",
+    hostlist_mode: "all"
 };
 
 function SetCurrentPage() {
@@ -51,17 +50,19 @@ function initial() {
         $("#ui_zapret_mode").val("disabled");
     }
     
-    $("#ui_tpws_port").val(config.tpws_port);
-    $("#ui_tpws_args").val(config.tpws_args);
-    $("#ui_nfqws_queue").val(config.nfqws_queue);
-    $("#ui_nfqws_args").val(config.nfqws_args);
-    $("#ui_hostlist_mode").val(config.hostlist_mode);
+    $("#ui_tpws_port").val(config.tpws_port || "10080");
+    $("#ui_tpws_args").val(config.tpws_args || "--fooling=md5sig");
+    $("#ui_nfqws_queue").val(config.nfqws_queue || "200");
+    $("#ui_nfqws_args").val(config.nfqws_args || "--fooling=md5sig");
+    $("#ui_hostlist_mode").val(config.hostlist_mode || "all");
     
-    if (config.hostlist_raw) {
-        $("#ui_hostlist_txt").val(config.hostlist_raw.split(",").join("\n"));
-    } else {
-        $("#ui_hostlist_txt").val("");
-    }
+    $.get("/user/zapret/hostlist.txt")
+        .done(function(data) {
+            $("#ui_hostlist_txt").val(data);
+        })
+        .fail(function() {
+            $("#ui_hostlist_txt").val("");
+        });
         
     changeMode();
 }
