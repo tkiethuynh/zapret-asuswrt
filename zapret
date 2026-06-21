@@ -175,7 +175,7 @@ webui() {
     mkdir -p /tmp/var/wwwext
     if [ -f /jffs/addons/zapret/userpage_zapret.asp ]; then
         sed "s/%%USER_ASP%%/${slot}.asp/g" /jffs/addons/zapret/userpage_zapret.asp > /tmp/var/wwwext/${slot}.asp
-        echo -n "Zapret" > /tmp/var/wwwext/${slot}.title
+        echo -n "DPI Bypass" > /tmp/var/wwwext/${slot}.title
     else
         echo "Error: /jffs/addons/zapret/userpage_zapret.asp not found." >&2
         return 1
@@ -209,7 +209,7 @@ webui() {
     {
         print $0
         if ($0 ~ /Advanced_NATPassThrough_Content.asp/) {
-            print "\t\t{url: \"" slot "\", tabName: \"Zapret\"},"
+            print "\t\t{url: \"" slot "\", tabName: \"DPI Bypass\"},"
         }
     }' /www/require/modules/menuTree.js > /tmp/menuTree.js
     
