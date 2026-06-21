@@ -47,7 +47,7 @@ start() {
         else
             echo "Starting tpws on port $tpws_port..."
             local tpws_args_processed=$(echo "$tpws_args" | sed 's/--fooling=[^ ]*//g')
-            /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/dev/null 2>&1 &
+            /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/tmp/tpws.log 2>&1 &
             echo $! > "$PID_DIR/zapret_tpws.pid"
             sleep 1
         fi
@@ -69,7 +69,7 @@ start() {
         else
             echo "Starting nfqws on queue $nfqws_queue..."
             local nfqws_args_processed=$(echo "$nfqws_args" | sed 's/--fooling=/--dpi-desync-fooling=/g')
-            /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/dev/null 2>&1 &
+            /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/tmp/nfqws.log 2>&1 &
             echo $! > "$PID_DIR/zapret_nfqws.pid"
             sleep 1
         fi
@@ -237,18 +237,18 @@ service_event() {
 EOF
     fi
     
-    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
-    local mode=$(get_json_val "mode" "$CONFIG_FILE")
-    local tpws_enabled=$(get_json_val "tpws_enabled" "$CONFIG_FILE")
-    local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
-    local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
-    local nfqws_enabled=$(get_json_val "nfqws_enabled" "$CONFIG_FILE")
-    local nfqws_args=$(get_json_val "nfqws_args" "$CONFIG_FILE")
-    local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
-    local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
-    local hostlist_raw=""
-    
     if [ -f /jffs/addons/custom_settings.txt ]; then
+        local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+        local mode=$(get_json_val "mode" "$CONFIG_FILE")
+        local tpws_enabled=$(get_json_val "tpws_enabled" "$CONFIG_FILE")
+        local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
+        local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
+        local nfqws_enabled=$(get_json_val "nfqws_enabled" "$CONFIG_FILE")
+        local nfqws_args=$(get_json_val "nfqws_args" "$CONFIG_FILE")
+        local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
+        local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
+        local hostlist_raw=""
+        
         while read -r line || [ -n "$line" ]; do
             case "$line" in
                 zapret_enabled*) enabled=$(echo "$line" | cut -d' ' -f2-) ;;
@@ -263,16 +263,13 @@ EOF
                 zapret_hostlist_raw*) hostlist_raw=$(echo "$line" | cut -d' ' -f2-) ;;
             esac
         done < /jffs/addons/custom_settings.txt
-    fi
-    
-    # Remove our keys from custom_settings.txt
-    if [ -f /jffs/addons/custom_settings.txt ]; then
+        
+        # Remove our keys from custom_settings.txt
         grep -v "^zapret_" /jffs/addons/custom_settings.txt > /tmp/custom_settings.txt.tmp
         mv /tmp/custom_settings.txt.tmp /jffs/addons/custom_settings.txt
-    fi
-    
-    # Rewrite config.json
-    cat <<EOF > "$CONFIG_FILE"
+        
+        # Rewrite config.json
+        cat <<EOF > "$CONFIG_FILE"
 {
   "enabled": "${enabled}",
   "mode": "${mode}",
@@ -286,11 +283,12 @@ EOF
 }
 EOF
 
-    # Handle host list
-    if [ "$hostlist_mode" = "custom" ]; then
-        echo "$hostlist_raw" | tr ',' '\n' | sed '/^[[:space:]]*$/d' > /jffs/addons/zapret/hostlist.txt
-    else
-        rm -f /jffs/addons/zapret/hostlist.txt
+        # Handle host list
+        if [ "$hostlist_mode" = "custom" ]; then
+            echo "$hostlist_raw" | tr ',' '\n' | sed '/^[[:space:]]*$/d' > /jffs/addons/zapret/hostlist.txt
+        else
+            rm -f /jffs/addons/zapret/hostlist.txt
+        fi
     fi
     
     # Apply new settings

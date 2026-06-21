@@ -23,9 +23,17 @@ else
     exit 1
 fi
 
-# 2. Cleanup Environment on Router
-echo "Resetting environment on router..."
+# 2. Backup existing configuration and cleanup environment
+echo "Backing up existing configuration and resetting environment on router..."
 $SSH_CMD '
+    mkdir -p /tmp/zapret_backup
+    if [ -f /jffs/addons/zapret/config.json ]; then
+        cp /jffs/addons/zapret/config.json /tmp/zapret_backup/config.json
+    fi
+    if [ -f /jffs/addons/zapret/hostlist.txt ]; then
+        cp /jffs/addons/zapret/hostlist.txt /tmp/zapret_backup/hostlist.txt
+    fi
+    
     /jffs/scripts/zapret stop || true
     if mount | grep -q "/www/require/modules/menuTree.js"; then
         umount -l /www/require/modules/menuTree.js || umount /www/require/modules/menuTree.js || true
@@ -246,10 +254,24 @@ else
     exit 1
 fi
 
-# Restore default disabled config and stop daemons to prevent routing disruption
-echo "Cleaning up router active state (disabling and stopping redirects)..."
+# Restore backup configuration and restart service if it was enabled
+echo "Restoring original configuration and active state..."
 $SSH_CMD '
-    cat <<EOF > /jffs/addons/zapret/config.json
+    if [ -f /tmp/zapret_backup/config.json ]; then
+        mkdir -p /jffs/addons/zapret
+        cp /tmp/zapret_backup/config.json /jffs/addons/zapret/config.json
+        if [ -f /tmp/zapret_backup/hostlist.txt ]; then
+            cp /tmp/zapret_backup/hostlist.txt /jffs/addons/zapret/hostlist.txt
+        fi
+        
+        # Check if it was enabled and start
+        enabled=$(grep -o "\"enabled\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" /jffs/addons/zapret/config.json | head -n 1 | cut -d'\''"'\'' -f4)
+        if [ "$enabled" = "1" ]; then
+            /jffs/scripts/zapret start
+        fi
+    else
+        # Default disabled config if no backup existed
+        cat <<EOF > /jffs/addons/zapret/config.json
 {
   "enabled": "0",
   "mode": "nfqws",
@@ -262,8 +284,10 @@ $SSH_CMD '
   "hostlist_mode": "all"
 }
 EOF
-    /jffs/scripts/zapret stop
-    rm -f /jffs/addons/zapret/hostlist.txt
+        /jffs/scripts/zapret stop
+        rm -f /jffs/addons/zapret/hostlist.txt
+    fi
+    rm -rf /tmp/zapret_backup
 '
 
 # Cleanup install dir on router
