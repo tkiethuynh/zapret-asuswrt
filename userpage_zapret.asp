@@ -56,7 +56,7 @@ function initial() {
     $("#ui_nfqws_args").val(config.nfqws_args || "--fooling=md5sig");
     $("#ui_hostlist_mode").val(config.hostlist_mode || "all");
     
-    $.get("/user/zapret/hostlist.txt")
+    $.get("/user/zapret/hostlist.json")
         .done(function(data) {
             $("#ui_hostlist_txt").val(data);
         })

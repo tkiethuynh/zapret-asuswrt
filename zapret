@@ -191,12 +191,12 @@ webui() {
         echo "var zapret_config = {enabled: \"0\", mode: \"nfqws\", tpws_enabled: \"0\", tpws_port: \"10080\", tpws_args: \"--fooling=md5sig\", nfqws_enabled: \"0\", nfqws_args: \"--fooling=md5sig\", nfqws_queue: \"200\", hostlist_mode: \"all\"};" > /tmp/var/wwwext/zapret/config.js
     fi
     
-    # Link hostlist file for WebUI access
+    # Link hostlist file for WebUI access (using .json extension since .txt is blocked by httpd)
+    rm -f /tmp/var/wwwext/zapret/hostlist.json /tmp/var/wwwext/zapret/hostlist.txt
     if [ -f /jffs/addons/zapret/hostlist.txt ]; then
-        ln -sf /jffs/addons/zapret/hostlist.txt /tmp/var/wwwext/zapret/hostlist.txt
+        ln -sf /jffs/addons/zapret/hostlist.txt /tmp/var/wwwext/zapret/hostlist.json
     else
-        rm -f /tmp/var/wwwext/zapret/hostlist.txt
-        touch /tmp/var/wwwext/zapret/hostlist.txt
+        touch /tmp/var/wwwext/zapret/hostlist.json
     fi
     
     # Unmount if already bind-mounted
