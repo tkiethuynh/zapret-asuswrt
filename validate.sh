@@ -117,7 +117,7 @@ zapret_tpws_enabled 0
 zapret_tpws_port 10080
 zapret_tpws_args --fooling=md5sig
 zapret_nfqws_enabled 1
-zapret_nfqws_args --fooling=md5sig
+zapret_nfqws_args --dpi-desync=split2 --dpi-desync-fooling=md5sig
 zapret_nfqws_queue 200
 zapret_hostlist_mode custom
 zapret_hostlist_raw google.com,youtube.com
@@ -257,7 +257,7 @@ $SSH_CMD '
   "tpws_port": "10080",
   "tpws_args": "--fooling=md5sig",
   "nfqws_enabled": "0",
-  "nfqws_args": "--fooling=md5sig",
+  "nfqws_args": "--dpi-desync=split2 --dpi-desync-fooling=md5sig",
   "nfqws_queue": "200",
   "hostlist_mode": "all"
 }
