@@ -30,7 +30,7 @@ var config = window.zapret_config || {
     tpws_port: "10080",
     tpws_args: "--fooling=md5sig",
     nfqws_enabled: "0",
-    nfqws_args: "--dpi-desync=split2 --dpi-desync-fooling=md5sig",
+    nfqws_args: "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
     nfqws_queue: "200",
     hostlist_mode: "all"
 };
@@ -55,7 +55,7 @@ function initial() {
     $("#ui_nfqws_queue").val(config.nfqws_queue || "200");
     var nfqws_args = config.nfqws_args || "";
     if (nfqws_args === "" || nfqws_args === "--fooling=md5sig" || nfqws_args.indexOf("--dpi-desync") === -1) {
-        nfqws_args = "--dpi-desync=split2 --dpi-desync-fooling=md5sig";
+        nfqws_args = "--dpi-desync=multisplit --dpi-desync-fooling=md5sig";
     }
     $("#ui_nfqws_args").val(nfqws_args);
     $("#ui_hostlist_mode").val(config.hostlist_mode || "all");
@@ -305,7 +305,7 @@ function applyRule() {
                     <tr id="tr_nfqws_args">
                       <th>nfqws Arguments</th>
                       <td>
-                        <input type="text" id="ui_nfqws_args" class="input_32_table" style="width: 400px;" value="--dpi-desync=split2 --dpi-desync-fooling=md5sig">
+                        <input type="text" id="ui_nfqws_args" class="input_32_table" style="width: 400px;" value="--dpi-desync=multisplit --dpi-desync-fooling=md5sig">
                       </td>
                     </tr>
                   </table>

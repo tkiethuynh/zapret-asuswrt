@@ -125,7 +125,7 @@ zapret_tpws_enabled 0
 zapret_tpws_port 10080
 zapret_tpws_args --fooling=md5sig
 zapret_nfqws_enabled 1
-zapret_nfqws_args --dpi-desync=split2 --dpi-desync-fooling=md5sig
+zapret_nfqws_args --dpi-desync=multisplit --dpi-desync-fooling=md5sig
 zapret_nfqws_queue 200
 zapret_hostlist_mode custom
 zapret_hostlist_raw google.com,youtube.com
@@ -232,7 +232,7 @@ fi
 
 # 12. Test Simulated WebUI Apply (mimic human browser submission)
 echo "Testing simulated WebUI Apply (mimicking human browser action)..."
-JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=split2 --dpi-desync-fooling=md5sig","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
+JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=multisplit --dpi-desync-fooling=md5sig","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
 
 $SSH_CMD "echo '$JSON_PAYLOAD' | jq -r 'to_entries | .[] | \"\(.key) \(.value)\"' > /jffs/addons/custom_settings.txt"
 $SSH_CMD "/jffs/scripts/zapret service_event"
@@ -279,7 +279,7 @@ $SSH_CMD '
   "tpws_port": "10080",
   "tpws_args": "--fooling=md5sig",
   "nfqws_enabled": "0",
-  "nfqws_args": "--dpi-desync=split2 --dpi-desync-fooling=md5sig",
+  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
   "nfqws_queue": "200",
   "hostlist_mode": "all"
 }
