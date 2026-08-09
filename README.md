@@ -79,6 +79,88 @@ The daemon script `/jffs/scripts/zapret` supports the following commands:
 
 ---
 
+## Verifying It Works
+
+`status` only proves the daemon is up and the rules are installed — it does **not** prove the
+bypass is actually defeating DPI. Use the A/B/A test below for that.
+
+### Scope: LAN traffic only
+
+Firewall rules hook `-i br0` in `mangle` PREROUTING and FORWARD, i.e. **traffic from LAN
+clients**. The router's own outbound traffic (OUTPUT chain) is deliberately not covered.
+
+> **A `curl` run on the router itself will fail against a censored site even when Zapret is
+> working perfectly for every LAN device.** Never use a router-local fetch as a health check.
+
+### A/B/A test (the only way to prove causation)
+
+This exploits the scope gap above: temporarily hook the router's own traffic, test, remove.
+
+```sh
+TARGET=https://www.bbc.com/vietnamese   # any site on your hostlist
+
+# A — control. Expect timeout with tls=0.000000 (TCP connects, TLS handshake stalls)
+curl -sS -o /dev/null -w '%{http_code} tls=%{time_appconnect}\n' --max-time 10 "$TARGET"
+
+# B — hook router traffic through nfqws.
+# The mark exclusion stops nfqws's own injected packets from re-entering the queue.
+iptables -t mangle -I OUTPUT -p tcp -m multiport --dports 80,443 \
+  -m mark ! --mark 0x40000000/0x40000000 -j ZAPRET
+
+curl -sS -o /dev/null -w '%{http_code} tls=%{time_appconnect}\n' --max-time 15 "$TARGET"
+# Expect HTTP 200, TLS ~0.2s
+
+# A' — ALWAYS remove the temporary rule (same args, -D instead of -I)
+iptables -t mangle -D OUTPUT -p tcp -m multiport --dports 80,443 \
+  -m mark ! --mark 0x40000000/0x40000000 -j ZAPRET
+```
+
+Safe to run over SSH: Merlin's SSH port is not 80/443, so these rules cannot lock you out.
+
+A control that times out with `tls=0.000000` (TCP completes, TLS does not) confirms
+**SNI/ClientHello-based DPI** — exactly what `--dpi-desync=split2` targets. If the control
+*succeeds*, the site was not blocked in the first place and the test proves nothing.
+
+### Troubleshooting: don't reach for a packet capture
+
+**Packet capture is the wrong tool here — do not install `tcpdump` for this.** Merlin/Entware
+ships without it, and installing it (`opkg install tcpdump libpcap`) will not answer the
+question, for a structural reason:
+
+Broadcom's **software flow cache** (`swaccel=N` in `/proc/net/nf_conntrack`) bypasses the Linux
+network stack once a flow is accelerated. `nfqws` mode disables only the hardware *runner*
+(`hwaccel`); `swaccel` intentionally stays on to preserve fast-path throughput.
+
+Consequence: `tcpdump -i br0` shows fresh SYNs, DNS, and handshakes, but **never the ongoing
+data of an established connection**. Chasing a "Zapret isn't working" report with packet
+captures produces empty files that look like proof of failure but prove nothing.
+
+Use connection state instead — available on stock firmware, no packages needed:
+
+```sh
+# ESTABLISHED + [ASSURED] == bidirectional traffic confirmed to that destination
+grep '<destination-ip-prefix>' /proc/net/nf_conntrack | grep '<lan-client-ip>'
+```
+
+Also note a browser **refresh reuses keep-alive HTTP/2 sockets**, so it generates no new
+handshake to observe. Force a fresh one:
+
+```sh
+conntrack -D -s <lan-client-ip> -d <destination-ip>
+```
+
+### Hostlist matching
+
+`--hostlist` **auto-matches subdomains**, so `bbc.com` already covers `www.bbc.com`; there is
+no need to list both.
+
+When identifying traffic by IP, beware shared CDN ranges — `bbc.com` resolves to Fastly
+`151.101.{0,64,128,192}.81`, but neighbouring `151.101.*.91` addresses on the same range
+belong to entirely different Fastly customers. A bare `151.101.` match is not proof of BBC
+traffic.
+
+---
+
 ## Developer Testing Suite
 
 The repository includes a validation script [validate.sh](validate.sh) to test modifications and verify system stability on the router before committing.
