@@ -14,6 +14,38 @@ get_json_val() {
     fi
 }
 
+fix_perms() {
+    [ -d /jffs/addons/zapret ] && chmod 755 /jffs/addons/zapret
+    [ -f /jffs/addons/zapret/config.json ] && chmod 644 /jffs/addons/zapret/config.json
+    [ -f /jffs/addons/zapret/hostlist.txt ] && chmod 644 /jffs/addons/zapret/hostlist.txt
+    [ -f /jffs/addons/custom_settings.txt ] && chmod 644 /jffs/addons/custom_settings.txt
+    [ -d /tmp/var/wwwext/zapret ] && chmod 755 /tmp/var/wwwext/zapret
+    [ -f /tmp/var/wwwext/zapret/config.js ] && chmod 644 /tmp/var/wwwext/zapret/config.js
+    echo "Permissions hardened."
+}
+
+watchdog_enable() {
+    if [ ! -x /jffs/scripts/zapret-watchdog ]; then
+        echo "Missing /jffs/scripts/zapret-watchdog" >&2
+        return 1
+    fi
+    if [ -x /usr/sbin/cru ]; then
+        /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
+        /usr/sbin/cru a zapret_watchdog '* * * * * /jffs/scripts/zapret-watchdog'
+        echo "Watchdog enabled: runs every minute."
+    else
+        echo "Error: cru not found; cannot register watchdog cron." >&2
+        return 1
+    fi
+}
+
+watchdog_disable() {
+    if [ -x /usr/sbin/cru ]; then
+        /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
+        echo "Watchdog disabled."
+    fi
+}
+
 start() {
     mkdir -p "$PID_DIR"
     
@@ -27,13 +59,44 @@ start() {
         echo "Zapret is disabled in config.json. Use WebUI to enable."
         return 0
     fi
-    
+
     local mode=$(get_json_val "mode" "$CONFIG_FILE")
+
+    # Disable Broadcom runner ONLY for nfqws mode to prevent packet flow acceleration conflicts.
+    # We keep Broadcom Flow Cache (fc) enabled so software-level fast path offloading still accelerates network traffic.
+    if [ "$mode" = "nfqws" ]; then
+        if [ -x /bin/runner ]; then
+            echo "Disabling Broadcom packet runner..."
+            /bin/runner disable 2>/dev/null || true
+        fi
+    fi
     local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
     local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
     local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
     local nfqws_args=$(get_json_val "nfqws_args" "$CONFIG_FILE")
     local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
+
+    # Wait for USB mount (Entware binaries in /opt/bin)
+    local target_bin=""
+    if [ "$mode" = "tpws" ]; then
+        target_bin="/opt/bin/tpws"
+    elif [ "$mode" = "nfqws" ]; then
+        target_bin="/opt/bin/nfqws"
+    fi
+
+    if [ -n "$target_bin" ]; then
+        local wait_count=0
+        while [ ! -f "$target_bin" ] && [ $wait_count -lt 30 ]; do
+            echo "Waiting for $target_bin to become available (USB mount)..."
+            sleep 1
+            wait_count=$((wait_count+1))
+        done
+
+        if [ ! -f "$target_bin" ]; then
+            echo "Error: $target_bin not found after 30 seconds. Cannot start." >&2
+            return 1
+        fi
+    fi
     
     local hostlist_arg=""
     if [ "$hostlist_mode" = "custom" ] && [ -f "/jffs/addons/zapret/hostlist.txt" ]; then
@@ -86,6 +149,10 @@ start() {
         
         iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
         iptables -t mangle -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
+
+        # Apply TCPMSS clamping rule to FORWARD chain to prevent nfqws raw socket EMSGSIZE errors
+        iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+        iptables -t mangle -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     else
         echo "Unknown mode: $mode" >&2
         return 1
@@ -98,12 +165,19 @@ stop() {
     killall tpws 2>/dev/null
     killall nfqws 2>/dev/null
     rm -f "$PID_DIR/zapret_tpws.pid" "$PID_DIR/zapret_nfqws.pid"
+
+    # Re-enable Broadcom runner
+    if [ -x /bin/runner ]; then
+        echo "Re-enabling Broadcom packet runner..."
+        /bin/runner enable 2>/dev/null || true
+    fi
     
     echo "Cleaning up iptables rules..."
     iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
     iptables -t nat -F ZAPRET 2>/dev/null
     iptables -t nat -X ZAPRET 2>/dev/null
     
+    iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
     iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
     iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
     iptables -t mangle -F ZAPRET 2>/dev/null
@@ -215,6 +289,7 @@ webui() {
     
     # Mount modified menuTree
     mount --bind /tmp/menuTree.js /www/require/modules/menuTree.js
+    fix_perms >/dev/null 2>&1 || true
     
     echo "WebUI injection complete."
 }
@@ -230,7 +305,7 @@ service_event() {
   "tpws_port": "10080",
   "tpws_args": "--fooling=md5sig",
   "nfqws_enabled": "0",
-  "nfqws_args": "--dpi-desync=split2 --dpi-desync-fooling=md5sig",
+  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
   "nfqws_queue": "200",
   "hostlist_mode": "all"
 }
@@ -289,6 +364,7 @@ EOF
         else
             rm -f /jffs/addons/zapret/hostlist.txt
         fi
+        fix_perms >/dev/null 2>&1 || true
     fi
     
     # Apply new settings
@@ -297,7 +373,49 @@ EOF
     webui
 }
 
-case "$1" in
+amtm_menu() {
+    while true; do
+        clear 2>/dev/null || true
+        echo "======================================"
+        echo " zapret-asuswrt"
+        echo "======================================"
+        echo "1. Show zapret status"
+        echo "2. Start zapret"
+        echo "3. Stop zapret"
+        echo "4. Restart zapret"
+        echo "5. Re-inject WebUI"
+        echo "6. Run watchdog check now"
+        echo "7. Enable watchdog cron"
+        echo "8. Disable watchdog cron"
+        echo "9. Show watchdog log"
+        echo "10. Re-apply safe permissions"
+        echo "e. Exit"
+        printf "\nChoose option: "
+        read choice
+        echo
+        case "$choice" in
+            1) status ;;
+            2) start ;;
+            3) stop ;;
+            4) stop; start ;;
+            5) webui; fix_perms ;;
+            6) [ -x /jffs/scripts/zapret-watchdog ] && /jffs/scripts/zapret-watchdog || echo "Watchdog script missing" ;;
+            7) watchdog_enable ;;
+            8) watchdog_disable ;;
+            9) [ -f /tmp/zapret-watchdog.log ] && tail -n 50 /tmp/zapret-watchdog.log || echo "No watchdog log yet." ;;
+            10) fix_perms ;;
+            [Ee]) return 0 ;;
+            *) echo "Invalid option." ;;
+        esac
+        printf "\nPress Enter to continue..."
+        read dummy
+    done
+}
+
+case "${1:-menu}" in
+    menu|"")
+        amtm_menu
+        ;;
     start)
         start
         ;;
@@ -317,8 +435,17 @@ case "$1" in
     service_event)
         service_event
         ;;
+    fix_perms)
+        fix_perms
+        ;;
+    watchdog_enable)
+        watchdog_enable
+        ;;
+    watchdog_disable)
+        watchdog_disable
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|webui|service_event}"
+        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms|watchdog_enable|watchdog_disable}"
         exit 1
         ;;
 esac

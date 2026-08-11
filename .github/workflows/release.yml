@@ -36,7 +36,7 @@ jobs:
           cp -r zapret-extracted/binaries/linux-arm64 zapret-merlin/binaries/
           
           # Copy our script/config files
-          cp install.sh zapret userpage_zapret.asp config.json zapret-merlin/
+          cp install.sh zapret zapret-watchdog userpage_zapret.asp config.json zapret-merlin/
           
           # Package it
           tar -czf zapret-merlin.tar.gz -C zapret-merlin .

@@ -34,12 +34,13 @@ $SSH_CMD '
         cp /jffs/addons/zapret/hostlist.txt /tmp/zapret_backup/hostlist.txt
     fi
     
+    /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
     /jffs/scripts/zapret stop || true
     if mount | grep -q "/www/require/modules/menuTree.js"; then
         umount -l /www/require/modules/menuTree.js || umount /www/require/modules/menuTree.js || true
     fi
     rm -rf /jffs/addons/zapret
-    rm -f /opt/bin/tpws /opt/bin/nfqws /opt/bin/ip2net /opt/bin/mdig /jffs/scripts/zapret
+    rm -f /opt/bin/tpws /opt/bin/nfqws /opt/bin/ip2net /opt/bin/mdig /jffs/scripts/zapret /jffs/scripts/zapret-watchdog
     rm -f /jffs/addons/amtm/personal_script.mod
     if [ -f /jffs/scripts/service-event ]; then
         awk '\''
@@ -106,7 +107,9 @@ HOOKS_PASS=true
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/services-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/firewall-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event' || HOOKS_PASS=false
-$SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/addons/amtm/personalscript.conf' || HOOKS_PASS=false
+$SSH_CMD 'test "$(head -n 1 /jffs/addons/amtm/personalscript.conf)" = "/jffs/scripts/zapret"' || HOOKS_PASS=false
+$SSH_CMD 'test -x /jffs/scripts/zapret-watchdog' || HOOKS_PASS=false
+$SSH_CMD '/usr/sbin/cru l | grep -q "zapret_watchdog"' || HOOKS_PASS=false
 
 if [ "$HOOKS_PASS" = true ]; then
     echo -e "${GREEN}[PASS] Boot and event hooks registered${NC}"

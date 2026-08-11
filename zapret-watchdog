@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# Zapret watchdog for Asuswrt-Merlin.
+# Keeps the selected zapret daemon and firewall hooks present when zapret is enabled.
+
+CONFIG_FILE="/jffs/addons/zapret/config.json"
+LOG="/tmp/zapret-watchdog.log"
+
+get_json_val() {
+    local key="$1"
+    local file="$2"
+    if [ -f "$file" ]; then
+        grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" | head -n 1 | cut -d'"' -f4
+    fi
+}
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
+    tail -n 100 "$LOG" > /tmp/zapret-watchdog.log.tmp 2>/dev/null && mv /tmp/zapret-watchdog.log.tmp "$LOG"
+}
+
+[ -x /jffs/scripts/zapret ] || exit 0
+[ -f "$CONFIG_FILE" ] || exit 0
+
+enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+mode=$(get_json_val "mode" "$CONFIG_FILE")
+[ "$enabled" = "1" ] || exit 0
+
+case "$mode" in
+    nfqws)
+        if iptables -t mangle -S 2>/dev/null | grep -q -- '-j ZAPRET'; then
+            if ! pidof nfqws >/dev/null 2>&1; then
+                log_msg "nfqws missing while ZAPRET rules are active; restarting zapret"
+                /jffs/scripts/zapret start >> "$LOG" 2>&1
+            fi
+        elif pidof nfqws >/dev/null 2>&1; then
+            log_msg "nfqws running but ZAPRET mangle hook missing; reapplying zapret"
+            /jffs/scripts/zapret start >> "$LOG" 2>&1
+        fi
+        ;;
+    tpws)
+        if iptables -t nat -S 2>/dev/null | grep -q -- '-j ZAPRET'; then
+            if ! pidof tpws >/dev/null 2>&1; then
+                log_msg "tpws missing while ZAPRET rules are active; restarting zapret"
+                /jffs/scripts/zapret start >> "$LOG" 2>&1
+            fi
+        elif pidof tpws >/dev/null 2>&1; then
+            log_msg "tpws running but ZAPRET nat hook missing; reapplying zapret"
+            /jffs/scripts/zapret start >> "$LOG" 2>&1
+        fi
+        ;;
+esac
