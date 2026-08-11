@@ -373,24 +373,91 @@ EOF
     webui
 }
 
+menu_colors() {
+    if [ -t 1 ]; then
+        C_RESET='\033[0m'
+        C_BOLD='\033[1m'
+        C_DIM='\033[2m'
+        C_RED='\033[31m'
+        C_GREEN='\033[32m'
+        C_YELLOW='\033[33m'
+        C_BLUE='\033[34m'
+        C_CYAN='\033[36m'
+        C_WHITE='\033[37m'
+        C_BG_GREEN='\033[42;30m'
+        C_BG_RED='\033[41;37m'
+        C_BG_BLUE='\033[44;37m'
+    else
+        C_RESET=''; C_BOLD=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''; C_WHITE=''
+        C_BG_GREEN=''; C_BG_RED=''; C_BG_BLUE=''
+    fi
+}
+
+badge() {
+    local color="$1"
+    local text="$2"
+    printf "%b %-7s %b" "$color" "$text" "$C_RESET"
+}
+
+menu_row() {
+    local key="$1"
+    local title="$2"
+    local desc="$3"
+    printf "  %b%-4s%b %-24s %b%s%b\n" "$C_BG_BLUE" "$key" "$C_RESET" "$title" "$C_DIM" "$desc" "$C_RESET"
+}
+
+amtm_menu_header() {
+    local enabled mode daemon watchdog
+    enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+    mode=$(get_json_val "mode" "$CONFIG_FILE")
+    [ -n "$mode" ] || mode="unknown"
+
+    if pidof nfqws >/dev/null 2>&1; then
+        daemon="nfqws"
+    elif pidof tpws >/dev/null 2>&1; then
+        daemon="tpws"
+    else
+        daemon="stopped"
+    fi
+
+    if [ -x /usr/sbin/cru ] && /usr/sbin/cru l 2>/dev/null | grep -q 'zapret_watchdog'; then
+        watchdog="on"
+    else
+        watchdog="off"
+    fi
+
+    clear 2>/dev/null || true
+    printf "%b╔══════════════════════════════════════════════════════╗%b\n" "$C_CYAN" "$C_RESET"
+    printf "%b║%b  %bZapret Asuswrt-Merlin%b                         %b║%b\n" "$C_CYAN" "$C_RESET" "$C_BOLD$C_WHITE" "$C_RESET" "$C_CYAN" "$C_RESET"
+    printf "%b║%b  DPI bypass control panel                         %b║%b\n" "$C_CYAN" "$C_DIM" "$C_CYAN" "$C_RESET"
+    printf "%b╚══════════════════════════════════════════════════════╝%b\n\n" "$C_CYAN" "$C_RESET"
+
+    printf "  Status   : "
+    if [ "$enabled" = "1" ]; then badge "$C_BG_GREEN" "ENABLED"; else badge "$C_BG_RED" "DISABLED"; fi
+    printf "   Mode: %b%s%b   Daemon: %b%s%b\n" "$C_YELLOW" "$mode" "$C_RESET" "$C_YELLOW" "$daemon" "$C_RESET"
+    printf "  Watchdog : "
+    if [ "$watchdog" = "on" ]; then badge "$C_BG_GREEN" "ON"; else badge "$C_BG_RED" "OFF"; fi
+    printf "   Log: /tmp/zapret-watchdog.log\n\n"
+}
+
 amtm_menu() {
+    menu_colors
     while true; do
-        clear 2>/dev/null || true
-        echo "======================================"
-        echo " zapret-asuswrt"
-        echo "======================================"
-        echo "1. Show zapret status"
-        echo "2. Start zapret"
-        echo "3. Stop zapret"
-        echo "4. Restart zapret"
-        echo "5. Re-inject WebUI"
-        echo "6. Run watchdog check now"
-        echo "7. Enable watchdog cron"
-        echo "8. Disable watchdog cron"
-        echo "9. Show watchdog log"
-        echo "10. Re-apply safe permissions"
-        echo "e. Exit"
-        printf "\nChoose option: "
+        amtm_menu_header
+        printf "%b Actions%b\n" "$C_BOLD" "$C_RESET"
+        menu_row "1"  "Status details"       "show daemons and iptables rules"
+        menu_row "2"  "Start zapret"         "start current configured mode"
+        menu_row "3"  "Stop zapret"          "stop daemons and remove rules"
+        menu_row "4"  "Restart zapret"       "clean restart"
+        menu_row "5"  "Re-inject WebUI"      "restore WAN tab after httpd restart"
+        printf "\n%b Watchdog & hardening%b\n" "$C_BOLD" "$C_RESET"
+        menu_row "6"  "Run watchdog now"     "one immediate health check"
+        menu_row "7"  "Enable watchdog"      "run every minute with cru"
+        menu_row "8"  "Disable watchdog"     "remove cru job"
+        menu_row "9"  "Watchdog log"         "show recent watchdog events"
+        menu_row "10" "Fix permissions"      "harden zapret files and WebUI cache"
+        printf "\n  %be%b    Exit\n" "$C_BG_BLUE" "$C_RESET"
+        printf "\n%bChoose option:%b " "$C_BOLD" "$C_RESET"
         read choice
         echo
         case "$choice" in
@@ -407,7 +474,7 @@ amtm_menu() {
             [Ee]) return 0 ;;
             *) echo "Invalid option." ;;
         esac
-        printf "\nPress Enter to continue..."
+        printf "\n%bPress Enter to continue...%b" "$C_DIM" "$C_RESET"
         read dummy
     done
 }
