@@ -15,13 +15,37 @@ get_json_val() {
 }
 
 fix_perms() {
-    [ -d /jffs/addons/zapret ] && chmod 755 /jffs/addons/zapret
-    [ -f /jffs/addons/zapret/config.json ] && chmod 644 /jffs/addons/zapret/config.json
-    [ -f /jffs/addons/zapret/hostlist.txt ] && chmod 644 /jffs/addons/zapret/hostlist.txt
-    [ -f /jffs/addons/custom_settings.txt ] && chmod 644 /jffs/addons/custom_settings.txt
-    [ -d /tmp/var/wwwext/zapret ] && chmod 755 /tmp/var/wwwext/zapret
-    [ -f /tmp/var/wwwext/zapret/config.js ] && chmod 644 /tmp/var/wwwext/zapret/config.js
+    chmod 755 /jffs/addons/zapret /tmp/var/wwwext/zapret 2>/dev/null || true
+    chmod 644 /jffs/addons/zapret/* /jffs/addons/custom_settings.txt /tmp/var/wwwext/zapret/* 2>/dev/null || true
     echo "Permissions hardened."
+}
+
+watchdog() {
+    [ -f "$CONFIG_FILE" ] || return 0
+    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+    [ "$enabled" = "1" ] || return 0
+    local mode=$(get_json_val "mode" "$CONFIG_FILE")
+    local log="/tmp/zapret-watchdog.log"
+    local daemon_name table
+
+    case "$mode" in
+        nfqws) daemon_name="nfqws"; table="mangle" ;;
+        tpws)  daemon_name="tpws";  table="nat" ;;
+        *) return 0 ;;
+    esac
+
+    local has_rules=0
+    iptables -t "$table" -S 2>/dev/null | grep -q -- '-j ZAPRET' && has_rules=1
+    local has_daemon=0
+    pidof "$daemon_name" >/dev/null 2>&1 && has_daemon=1
+
+    if [ "$has_rules" -eq 1 ] && [ "$has_daemon" -eq 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $daemon_name missing while ZAPRET rules active; restarting zapret" >> "$log"
+        start >> "$log" 2>&1
+    elif [ "$has_rules" -eq 0 ] && [ "$has_daemon" -eq 1 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $daemon_name running but ZAPRET $table hook missing; reapplying zapret" >> "$log"
+        start >> "$log" 2>&1
+    fi
 }
 
 watchdog_enable() {
@@ -324,18 +348,18 @@ EOF
         local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
         local hostlist_raw=""
         
-        while read -r line || [ -n "$line" ]; do
-            case "$line" in
-                zapret_enabled*) enabled=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_mode*) mode=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_tpws_enabled*) tpws_enabled=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_tpws_port*) tpws_port=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_tpws_args*) tpws_args=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_nfqws_enabled*) nfqws_enabled=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_nfqws_args*) nfqws_args=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_nfqws_queue*) nfqws_queue=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_hostlist_mode*) hostlist_mode=$(echo "$line" | cut -d' ' -f2-) ;;
-                zapret_hostlist_raw*) hostlist_raw=$(echo "$line" | cut -d' ' -f2-) ;;
+        while read -r key val || [ -n "$key" ]; do
+            case "$key" in
+                zapret_enabled) enabled="$val" ;;
+                zapret_mode) mode="$val" ;;
+                zapret_tpws_enabled) tpws_enabled="$val" ;;
+                zapret_tpws_port) tpws_port="$val" ;;
+                zapret_tpws_args) tpws_args="$val" ;;
+                zapret_nfqws_enabled) nfqws_enabled="$val" ;;
+                zapret_nfqws_args) nfqws_args="$val" ;;
+                zapret_nfqws_queue) nfqws_queue="$val" ;;
+                zapret_hostlist_mode) hostlist_mode="$val" ;;
+                zapret_hostlist_raw) hostlist_raw="$val" ;;
             esac
         done < /jffs/addons/custom_settings.txt
         
@@ -505,6 +529,9 @@ case "${1:-menu}" in
     fix_perms)
         fix_perms
         ;;
+    watchdog)
+        watchdog
+        ;;
     watchdog_enable)
         watchdog_enable
         ;;
@@ -512,7 +539,7 @@ case "${1:-menu}" in
         watchdog_disable
         ;;
     *)
-        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms|watchdog_enable|watchdog_disable}"
+        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms|watchdog|watchdog_enable|watchdog_disable}"
         exit 1
         ;;
 esac

@@ -65,28 +65,17 @@ fi
 # 5. Hook into boot scripts
 echo "Configuring boot script hooks..."
 
-# services-start hook
-if [ ! -f /jffs/scripts/services-start ]; then
-    echo "#!/bin/sh" > /jffs/scripts/services-start
-    chmod +x /jffs/scripts/services-start
-fi
-if ! grep -q "/jffs/scripts/zapret" /jffs/scripts/services-start; then
-    echo "" >> /jffs/scripts/services-start
-    echo "/jffs/scripts/zapret webui" >> /jffs/scripts/services-start
-    echo "/jffs/scripts/zapret start" >> /jffs/scripts/services-start
-    echo "Hooked services-start."
-fi
+add_hook() {
+    local file="/jffs/scripts/$1"; shift
+    [ -f "$file" ] || { echo "#!/bin/sh" > "$file"; chmod +x "$file"; }
+    grep -q "/jffs/scripts/zapret" "$file" && return 0
+    echo "" >> "$file"
+    for line in "$@"; do echo "$line" >> "$file"; done
+    echo "Hooked $(basename "$file")."
+}
 
-# firewall-start hook
-if [ ! -f /jffs/scripts/firewall-start ]; then
-    echo "#!/bin/sh" > /jffs/scripts/firewall-start
-    chmod +x /jffs/scripts/firewall-start
-fi
-if ! grep -q "/jffs/scripts/zapret" /jffs/scripts/firewall-start; then
-    echo "" >> /jffs/scripts/firewall-start
-    echo "/jffs/scripts/zapret start" >> /jffs/scripts/firewall-start
-    echo "Hooked firewall-start."
-fi
+add_hook services-start "/jffs/scripts/zapret webui" "/jffs/scripts/zapret start"
+add_hook firewall-start "/jffs/scripts/zapret start"
 
 # service-event hook
 if [ ! -f /jffs/scripts/service-event ]; then
