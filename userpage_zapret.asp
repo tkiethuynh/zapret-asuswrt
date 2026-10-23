@@ -64,7 +64,7 @@ function initial() {
         url: "/user/zapret/hostlist.json",
         dataType: "text",
         success: function(data) {
-            $("#ui_hostlist_txt").val(data);
+            $("#ui_hostlist_txt").val(data ? data.trim() : "");
         },
         error: function() {
             $("#ui_hostlist_txt").val("");
@@ -157,25 +157,33 @@ function applyRule() {
                 }
                 cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
                 cleaned = cleaned.split(/[/?#:]/)[0];
-                return cleaned.trim();
+                return cleaned.trim().toLowerCase();
             })
             .filter(function(line) { return line.length > 0; })
+            .filter(function(value, index, self) { return self.indexOf(value) === index; })
             .join(",");
+
+        if (cleanList.length === 0 && $("#ui_hostlist_txt").val().trim().length === 0) {
+            if (!confirm("The host list is currently empty. Submitting will not bypass any domains. Are you sure?")) {
+                return;
+            }
+        }
     }
     
     // Package custom settings into the required amng_custom JSON variable
-    custom_settings["zapret_enabled"] = enabled;
-    custom_settings["zapret_mode"] = mode;
-    custom_settings["zapret_tpws_enabled"] = tpws_enabled;
-    custom_settings["zapret_tpws_port"] = $("#ui_tpws_port").val();
-    custom_settings["zapret_tpws_args"] = $("#ui_tpws_args").val();
-    custom_settings["zapret_nfqws_enabled"] = nfqws_enabled;
-    custom_settings["zapret_nfqws_args"] = $("#ui_nfqws_args").val();
-    custom_settings["zapret_nfqws_queue"] = $("#ui_nfqws_queue").val();
-    custom_settings["zapret_hostlist_mode"] = hostlistMode;
-    custom_settings["zapret_hostlist_raw"] = cleanList;
+    var post_settings = {};
+    post_settings["zapret_enabled"] = enabled;
+    post_settings["zapret_mode"] = mode;
+    post_settings["zapret_tpws_enabled"] = tpws_enabled;
+    post_settings["zapret_tpws_port"] = $("#ui_tpws_port").val();
+    post_settings["zapret_tpws_args"] = $("#ui_tpws_args").val();
+    post_settings["zapret_nfqws_enabled"] = nfqws_enabled;
+    post_settings["zapret_nfqws_args"] = $("#ui_nfqws_args").val();
+    post_settings["zapret_nfqws_queue"] = $("#ui_nfqws_queue").val();
+    post_settings["zapret_hostlist_mode"] = hostlistMode;
+    post_settings["zapret_hostlist_raw"] = cleanList;
     
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    document.getElementById('amng_custom').value = JSON.stringify(post_settings);
     
     showLoading(5);
     document.form.submit();

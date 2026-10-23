@@ -14,6 +14,14 @@ get_json_val() {
     fi
 }
 
+count_hosts() {
+    local file="$1"
+    [ -f "$file" ] || { echo 0; return; }
+    local count
+    count=$(grep -c -v '^[[:space:]]*\(#\|$\)' "$file" 2>/dev/null)
+    echo "${count:-0}"
+}
+
 fix_perms() {
     chmod 755 /jffs/addons/zapret /tmp/var/wwwext/zapret 2>/dev/null || true
     chmod 644 /jffs/addons/zapret/* /jffs/addons/custom_settings.txt /tmp/var/wwwext/zapret/* 2>/dev/null || true
@@ -123,7 +131,22 @@ start() {
     fi
     
     local hostlist_arg=""
-    if [ "$hostlist_mode" = "custom" ] && [ -f "/jffs/addons/zapret/hostlist.txt" ]; then
+    if [ "$hostlist_mode" = "custom" ]; then
+        local valid_hosts=$(count_hosts "/jffs/addons/zapret/hostlist.txt")
+        if [ "$valid_hosts" -eq 0 ] 2>/dev/null || [ -z "$valid_hosts" ]; then
+            local bak_hosts=$(count_hosts "/jffs/addons/zapret/hostlist.txt.bak")
+            if [ "$bak_hosts" -gt 0 ] 2>/dev/null; then
+                echo "Notice: Restoring /jffs/addons/zapret/hostlist.txt from backup..."
+                cp -f /jffs/addons/zapret/hostlist.txt.bak /jffs/addons/zapret/hostlist.txt
+                valid_hosts=$bak_hosts
+            fi
+        fi
+        if [ "$valid_hosts" -eq 0 ] 2>/dev/null || [ -z "$valid_hosts" ]; then
+            echo "Error: hostlist_mode is custom, but /jffs/addons/zapret/hostlist.txt is missing or empty. Aborting to protect network traffic." >&2
+            logger -t zapret "Error: hostlist_mode is custom but hostlist.txt is missing or empty (0 valid lines). Aborting start to prevent global desync."
+            stop >/dev/null 2>&1 || true
+            return 1
+        fi
         hostlist_arg="--hostlist=/jffs/addons/zapret/hostlist.txt"
     fi
 
@@ -247,7 +270,6 @@ status() {
 webui() {
     # Find available slot (user1 to user20)
     local slot=""
-    local i
     local i=1
     while [ $i -le 20 ]; do
         local title_file="/tmp/var/wwwext/user${i}.title"
@@ -336,7 +358,7 @@ service_event() {
 EOF
     fi
     
-    if [ -f /jffs/addons/custom_settings.txt ]; then
+    if [ -f /jffs/addons/custom_settings.txt ] && grep -q "^zapret_" /jffs/addons/custom_settings.txt; then
         local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
         local mode=$(get_json_val "mode" "$CONFIG_FILE")
         local tpws_enabled=$(get_json_val "tpws_enabled" "$CONFIG_FILE")
@@ -384,9 +406,31 @@ EOF
 
         # Handle host list
         if [ "$hostlist_mode" = "custom" ]; then
-            echo "$hostlist_raw" | tr ',' '\n' | sed '/^[[:space:]]*$/d' > /jffs/addons/zapret/hostlist.txt
-        else
-            rm -f /jffs/addons/zapret/hostlist.txt
+            local parsed_hosts=$(echo "$hostlist_raw" | tr -d '\r' | tr ',' '\n' | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sed '/^$/d' | sort -u)
+            local cur_hosts=$(count_hosts "/jffs/addons/zapret/hostlist.txt")
+
+            if [ -n "$parsed_hosts" ]; then
+                # Back up existing hostlist before overwriting
+                if [ "$cur_hosts" -gt 0 ] 2>/dev/null; then
+                    cp -f /jffs/addons/zapret/hostlist.txt /jffs/addons/zapret/hostlist.txt.bak
+                fi
+                echo "$parsed_hosts" > /jffs/addons/zapret/hostlist.txt
+            else
+                if [ "$cur_hosts" -gt 0 ] 2>/dev/null; then
+                    echo "Warning: hostlist_raw is empty but hostlist.txt has entries; preserving hostlist.txt." >&2
+                    logger -t zapret "service_event: hostlist_raw is empty, preserving existing hostlist.txt ($cur_hosts domains)"
+                    if [ ! -f /jffs/addons/zapret/hostlist.txt.bak ]; then
+                        cp -f /jffs/addons/zapret/hostlist.txt /jffs/addons/zapret/hostlist.txt.bak
+                    fi
+                else
+                    local bak_hosts=$(count_hosts "/jffs/addons/zapret/hostlist.txt.bak")
+                    if [ "$bak_hosts" -gt 0 ] 2>/dev/null; then
+                        echo "Warning: hostlist_raw is empty and hostlist.txt is empty; restoring from hostlist.txt.bak ($bak_hosts domains)." >&2
+                        logger -t zapret "service_event: restoring hostlist.txt from hostlist.txt.bak ($bak_hosts domains)"
+                        cp -f /jffs/addons/zapret/hostlist.txt.bak /jffs/addons/zapret/hostlist.txt
+                    fi
+                fi
+            fi
         fi
         fix_perms >/dev/null 2>&1 || true
     fi
