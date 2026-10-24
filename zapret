@@ -166,6 +166,12 @@ start() {
         echo "Applying iptables rules for tpws..."
         iptables -t nat -N ZAPRET 2>/dev/null
         iptables -t nat -F ZAPRET
+        
+        # Bypass VPN / WireGuard / Policy routing marked traffic and custom bypass ipsets
+        iptables -t nat -A ZAPRET -m mark --mark 0x1000/0x1000 -j RETURN 2>/dev/null || true
+        ipset list oracle_bypass >/dev/null 2>&1 && iptables -t nat -A ZAPRET -m set --match-set oracle_bypass dst -j RETURN 2>/dev/null || true
+        [ -f /jffs/addons/zapret/custom-bypass.sh ] && /bin/sh /jffs/addons/zapret/custom-bypass.sh nat 2>/dev/null || true
+        
         iptables -t nat -A ZAPRET -p tcp --dport 80 -j REDIRECT --to-ports "$tpws_port"
         iptables -t nat -A ZAPRET -p tcp --dport 443 -j REDIRECT --to-ports "$tpws_port"
         
@@ -188,6 +194,12 @@ start() {
         echo "Applying iptables rules for nfqws..."
         iptables -t mangle -N ZAPRET 2>/dev/null
         iptables -t mangle -F ZAPRET
+        
+        # Bypass VPN / WireGuard / Policy routing marked traffic and custom bypass ipsets
+        iptables -t mangle -A ZAPRET -m mark --mark 0x1000/0x1000 -j RETURN 2>/dev/null || true
+        ipset list oracle_bypass >/dev/null 2>&1 && iptables -t mangle -A ZAPRET -m set --match-set oracle_bypass dst -j RETURN 2>/dev/null || true
+        [ -f /jffs/addons/zapret/custom-bypass.sh ] && /bin/sh /jffs/addons/zapret/custom-bypass.sh mangle 2>/dev/null || true
+        
         iptables -t mangle -A ZAPRET -p tcp --dport 80 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
         iptables -t mangle -A ZAPRET -p tcp --dport 443 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
         
