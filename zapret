@@ -200,14 +200,13 @@ start() {
         ipset list oracle_bypass >/dev/null 2>&1 && iptables -t mangle -A ZAPRET -m set --match-set oracle_bypass dst -j RETURN 2>/dev/null || true
         [ -f /jffs/addons/zapret/custom-bypass.sh ] && /bin/sh /jffs/addons/zapret/custom-bypass.sh mangle 2>/dev/null || true
         
-        iptables -t mangle -A ZAPRET -p tcp --dport 80 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
-        iptables -t mangle -A ZAPRET -p tcp --dport 443 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
+        # Only inspect handshake/initial data packets (1:6) from client to avoid userspace overhead on ongoing data transfer
+        iptables -t mangle -A ZAPRET -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 1:6 -p tcp --dport 80 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
+        iptables -t mangle -A ZAPRET -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 1:6 -p tcp --dport 443 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
         
         iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
         iptables -t mangle -I FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
-        
         iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
-        iptables -t mangle -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
 
         # Apply TCPMSS clamping rule to FORWARD chain to prevent nfqws raw socket EMSGSIZE errors
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
