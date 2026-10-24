@@ -331,11 +331,20 @@ webui() {
         touch /tmp/var/wwwext/zapret/hostlist.json
     fi
     
-    # Unmount if already bind-mounted
-    if mount | grep -q "/www/require/modules/menuTree.js"; then
-        umount -l /www/require/modules/menuTree.js 2>/dev/null || umount /www/require/modules/menuTree.js 2>/dev/null
+    # Lock to safely coordinate with other Asuswrt-Merlin addons
+    local lockfile="/tmp/addonwebui.lock"
+    local fd=388
+    eval exec "$fd>$lockfile"
+    flock -x "$fd"
+
+    # Base on existing /tmp/menuTree.js to preserve other addons, or initialize from stock
+    if [ ! -f /tmp/menuTree.js ]; then
+        cp -fp /www/require/modules/menuTree.js /tmp/menuTree.js
     fi
-    
+
+    # Clean up any existing Zapret entry to prevent duplicates
+    sed -i '/tabName: "Zapret"/d' /tmp/menuTree.js
+
     # Inject into menuTree.js after NATPassThrough tab (menu_WAN)
     awk -v slot="${slot}.asp" '
     {
@@ -343,10 +352,13 @@ webui() {
         if ($0 ~ /Advanced_NATPassThrough_Content.asp/) {
             print "\t\t{url: \"" slot "\", tabName: \"Zapret\"},"
         }
-    }' /www/require/modules/menuTree.js > /tmp/menuTree.js
-    
-    # Mount modified menuTree
+    }' /tmp/menuTree.js > /tmp/menuTree.js.tmp && mv /tmp/menuTree.js.tmp /tmp/menuTree.js
+
+    # Re-apply bind mount
+    umount /www/require/modules/menuTree.js 2>/dev/null || true
     mount --bind /tmp/menuTree.js /www/require/modules/menuTree.js
+
+    flock -u "$fd"
     fix_perms >/dev/null 2>&1 || true
     
     echo "WebUI injection complete."
