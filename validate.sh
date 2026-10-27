@@ -36,6 +36,9 @@ $SSH_CMD '
     if [ -f /jffs/addons/zapret/hostlist.txt.bak ]; then
         cp /jffs/addons/zapret/hostlist.txt.bak /tmp/zapret_backup/hostlist.txt.bak
     fi
+    if [ -f /jffs/addons/custom_settings.txt ]; then
+        cp /jffs/addons/custom_settings.txt /tmp/zapret_backup/custom_settings.txt
+    fi
     
     /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
     /jffs/scripts/zapret stop || true
@@ -271,6 +274,11 @@ $SSH_CMD '
         fi
         if [ -f /tmp/zapret_backup/hostlist.txt.bak ]; then
             cp /tmp/zapret_backup/hostlist.txt.bak /jffs/addons/zapret/hostlist.txt.bak
+        fi
+        if [ -f /tmp/zapret_backup/custom_settings.txt ]; then
+            cp /tmp/zapret_backup/custom_settings.txt /jffs/addons/custom_settings.txt
+        else
+            sed -i "/^zapret_/d" /jffs/addons/custom_settings.txt 2>/dev/null || true
         fi
         
         # Check if it was enabled and start
