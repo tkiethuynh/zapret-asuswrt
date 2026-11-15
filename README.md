@@ -88,8 +88,7 @@ bypass is actually defeating DPI. Use the A/B/A test below for that.
 
 ### Scope: LAN traffic only
 
-Firewall rules hook `-i br0` in `mangle` PREROUTING and FORWARD, i.e. **traffic from LAN
-clients**. The router's own outbound traffic (OUTPUT chain) is deliberately not covered.
+Firewall rules hook `-i br+` in `nat` PREROUTING (`tpws`) and `mangle` FORWARD (`nfqws`), i.e. **traffic from LAN clients** (including guest LAN bridges). The router's own outbound traffic (OUTPUT chain) is deliberately not covered.
 
 > **A `curl` run on the router itself will fail against a censored site even when Zapret is
 > working perfectly for every LAN device.** Never use a router-local fetch as a health check.

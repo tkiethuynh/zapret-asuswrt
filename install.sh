@@ -74,9 +74,17 @@ chmod 755 /jffs/scripts/zapret
 # 5. Hook into boot scripts
 echo "Configuring boot script hooks..."
 
+ensure_trailing_newline() {
+    local file="$1"
+    if [ -s "$file" ] && [ -n "$(tail -c 1 "$file" 2>/dev/null)" ]; then
+        echo "" >> "$file"
+    fi
+}
+
 add_hook() {
     local file="/jffs/scripts/$1"; shift
     [ -f "$file" ] || { echo "#!/bin/sh" > "$file"; chmod +x "$file"; }
+    ensure_trailing_newline "$file"
     local added=0
     for line in "$@"; do
         if ! grep -Fqx "$line" "$file"; then
@@ -87,7 +95,12 @@ add_hook() {
     [ "$added" -eq 1 ] && echo "Hooked $(basename "$file")." || true
 }
 
-add_hook services-start "/jffs/scripts/zapret webui" "/jffs/scripts/zapret start &"
+# Remove legacy pre-USB start from services-start (post-mount and firewall-start handle daemon startup)
+if [ -f /jffs/scripts/services-start ]; then
+    sed -i '/^\/jffs\/scripts\/zapret start[[:space:]]*&\?$/d' /jffs/scripts/services-start 2>/dev/null || true
+fi
+
+add_hook services-start "/jffs/scripts/zapret webui"
 add_hook firewall-start "/jffs/scripts/zapret start &"
 add_hook post-mount '[ -x "${1}/entware/bin/opkg" ] && [ -x /jffs/scripts/zapret ] && /jffs/scripts/zapret start &'
 
@@ -97,6 +110,7 @@ if [ ! -f /jffs/scripts/service-event ]; then
     chmod +x /jffs/scripts/service-event
 fi
 if ! grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event; then
+    ensure_trailing_newline /jffs/scripts/service-event
     cat <<'EOF' >> /jffs/scripts/service-event
 if [ "$1" = "zapret" ] || [ "$2" = "zapret" ]; then
     { /jffs/scripts/zapret service_event; } &

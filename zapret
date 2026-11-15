@@ -58,17 +58,27 @@ fix_perms() {
     echo "Permissions hardened."
 }
 
+log_msg() {
+    echo "$1"
+    logger -t zapret "$1" 2>/dev/null || true
+}
+
+log_err() {
+    echo "$1" >&2
+    logger -t zapret "$1" 2>/dev/null || true
+}
+
 start() {
     mkdir -p "$PID_DIR"
     
     if [ ! -f "$CONFIG_FILE" ]; then
-        echo "Configuration file $CONFIG_FILE not found. Cannot start." >&2
+        log_err "Configuration file $CONFIG_FILE not found. Cannot start."
         return 1
     fi
     
     local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
     if [ "$enabled" != "1" ]; then
-        echo "Zapret is disabled in config.json. Use WebUI to enable."
+        log_msg "Zapret is disabled in config.json. Use WebUI to enable."
         return 0
     fi
 
@@ -98,6 +108,9 @@ start() {
 
     if [ -n "$target_bin" ]; then
         local wait_count=0
+        if [ ! -f "$target_bin" ]; then
+            log_msg "Waiting for $target_bin to become available (USB mount)..."
+        fi
         while [ ! -f "$target_bin" ] && [ $wait_count -lt 30 ]; do
             echo "Waiting for $target_bin to become available (USB mount)..."
             sleep 1
@@ -105,9 +118,15 @@ start() {
         done
 
         if [ ! -f "$target_bin" ]; then
-            echo "Error: $target_bin not found after 30 seconds. Cannot start." >&2
+            log_err "Error: $target_bin not found after 30 seconds. Cannot start."
             return 1
         fi
+    fi
+
+    # Self-heal WebUI mount/config if another boot action or httpd event cleared /tmp/menuTree.js
+    if ! grep -q 'tabName: "Zapret"' /www/require/modules/menuTree.js 2>/dev/null || [ ! -f /tmp/var/wwwext/zapret/config.js ]; then
+        log_msg "WebUI entry or config.js missing during start; re-injecting WebUI..."
+        webui >/dev/null 2>&1 || true
     fi
     
     local hostlist_arg=""
@@ -132,7 +151,7 @@ start() {
 
     if [ "$mode" = "tpws" ]; then
         if ! is_valid_port "$tpws_port"; then
-            echo "Error: Invalid tpws_port '$tpws_port'." >&2
+            log_err "Error: Invalid tpws_port '$tpws_port'."
             return 1
         fi
 
@@ -145,7 +164,9 @@ start() {
             fi
         fi
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+        iptables -t mangle -D FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -F ZAPRET 2>/dev/null || true
         iptables -t mangle -X ZAPRET 2>/dev/null || true
@@ -154,7 +175,7 @@ start() {
         if pidof tpws >/dev/null 2>&1; then
             echo "tpws is already running."
         else
-            echo "Starting tpws on port $tpws_port..."
+            log_msg "Starting tpws on port $tpws_port..."
             local tpws_args_processed=$(echo "$tpws_args" | sed 's/--fooling=[^ ]*//g')
             set -f
             /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/tmp/tpws.log 2>&1 389>&- &
@@ -164,8 +185,7 @@ start() {
         fi
 
         if ! pidof tpws >/dev/null 2>&1; then
-            echo "Error: tpws failed to stay running. See /tmp/tpws.log" >&2
-            logger -t zapret "Error: tpws failed to stay running; aborting iptables REDIRECT setup."
+            log_err "Error: tpws failed to stay running. See /tmp/tpws.log"
             rm -f "$PID_DIR/zapret_tpws.pid"
             return 1
         fi
@@ -183,12 +203,13 @@ start() {
         iptables -t nat -A ZAPRET -p tcp --dport 80 -j REDIRECT --to-ports "$tpws_port"
         iptables -t nat -A ZAPRET -p tcp --dport 443 -j REDIRECT --to-ports "$tpws_port"
         
-        iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
-        iptables -t nat -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
+        iptables -t nat -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t nat -I PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET
         
     elif [ "$mode" = "nfqws" ]; then
         if ! is_valid_port "$nfqws_queue"; then
-            echo "Error: Invalid nfqws_queue '$nfqws_queue'." >&2
+            log_err "Error: Invalid nfqws_queue '$nfqws_queue'."
             return 1
         fi
 
@@ -197,6 +218,7 @@ start() {
             killall tpws 2>/dev/null || true
             rm -f "$PID_DIR/zapret_tpws.pid"
         fi
+        iptables -t nat -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t nat -F ZAPRET 2>/dev/null || true
         iptables -t nat -X ZAPRET 2>/dev/null || true
@@ -205,7 +227,7 @@ start() {
         if pidof nfqws >/dev/null 2>&1; then
             echo "nfqws is already running."
         else
-            echo "Starting nfqws on queue $nfqws_queue..."
+            log_msg "Starting nfqws on queue $nfqws_queue..."
             local nfqws_args_processed=$(echo "$nfqws_args" | sed 's/--fooling=/--dpi-desync-fooling=/g')
             set -f
             /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/tmp/nfqws.log 2>&1 389>&- &
@@ -215,8 +237,7 @@ start() {
         fi
 
         if ! pidof nfqws >/dev/null 2>&1; then
-            echo "Error: nfqws failed to stay running. See /tmp/nfqws.log" >&2
-            logger -t zapret "Error: nfqws failed to stay running; aborting iptables NFQUEUE setup."
+            log_err "Error: nfqws failed to stay running. See /tmp/nfqws.log"
             rm -f "$PID_DIR/zapret_nfqws.pid"
             return 1
         fi
@@ -235,18 +256,20 @@ start() {
         iptables -t mangle -A ZAPRET -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 1:6 -p tcp --dport 80 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
         iptables -t mangle -A ZAPRET -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 1:6 -p tcp --dport 443 -j NFQUEUE --queue-num "$nfqws_queue" --queue-bypass
         
-        iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
-        iptables -t mangle -I FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
-        iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+        iptables -t mangle -D FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -I FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET
+        iptables -t mangle -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
 
         # Apply TCPMSS clamping rule to FORWARD chain (at top of chain) to prevent WAN MTU blackhole and nfqws EMSGSIZE errors
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
         iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
     else
-        echo "Unknown mode: $mode" >&2
+        log_err "Unknown mode: $mode"
         return 1
     fi
-    echo "Zapret started successfully."
+    log_msg "Zapret started successfully (mode=$mode, pids=$(pidof "$mode" 2>/dev/null))."
 }
 
 stop() {
@@ -262,18 +285,21 @@ stop() {
     fi
     
     echo "Cleaning up iptables rules..."
-    iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+    iptables -t nat -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+    iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t nat -F ZAPRET 2>/dev/null
     iptables -t nat -X ZAPRET 2>/dev/null
     
     iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
     iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
-    iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
-    iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
+    iptables -t mangle -D FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+    iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+    iptables -t mangle -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+    iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t mangle -F ZAPRET 2>/dev/null
     iptables -t mangle -X ZAPRET 2>/dev/null
     
-    echo "Zapret stopped."
+    log_msg "Zapret stopped."
 }
 
 status() {
@@ -328,7 +354,7 @@ webui() {
     done
     
     if [ -z "$slot" ]; then
-        echo "Error: No available WebUI slots (user1-user20) found." >&2
+        log_err "Error: No available WebUI slots (user1-user20) found."
         return 1
     fi
     
@@ -340,7 +366,7 @@ webui() {
         sed "s/%%USER_ASP%%/${slot}.asp/g" /jffs/addons/zapret/userpage_zapret.asp > /tmp/var/wwwext/${slot}.asp
         echo -n "Zapret" > /tmp/var/wwwext/${slot}.title
     else
-        echo "Error: /jffs/addons/zapret/userpage_zapret.asp not found." >&2
+        log_err "Error: /jffs/addons/zapret/userpage_zapret.asp not found."
         return 1
     fi
     
@@ -390,9 +416,10 @@ webui() {
     mount --bind /tmp/menuTree.js /www/require/modules/menuTree.js
 
     flock -u "$fd"
+    eval exec "$fd>&-"
     fix_perms >/dev/null 2>&1 || true
     
-    echo "WebUI injection complete."
+    log_msg "Mounted Zapret WebUI page as ${slot}.asp"
 }
 
 service_event() {
@@ -491,6 +518,7 @@ EOF
     fi
     
     # Apply new settings
+    log_msg "Applying configuration via service_event..."
     stop
     start
     webui

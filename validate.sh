@@ -120,7 +120,8 @@ fi
 # 7. Verify Hooks
 echo "Verifying hook scripts..."
 HOOKS_PASS=true
-$SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/services-start' || HOOKS_PASS=false
+$SSH_CMD 'grep -Fqx "/jffs/scripts/zapret webui" /jffs/scripts/services-start' || HOOKS_PASS=false
+$SSH_CMD '! grep -q "^/jffs/scripts/zapret start" /jffs/scripts/services-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/firewall-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/post-mount' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event' || HOOKS_PASS=false
@@ -171,8 +172,8 @@ else
 fi
 
 # Verify mangle rules injected
-if $SSH_CMD 'iptables -t mangle -S ZAPRET | grep -q "NFQUEUE --queue-num 200"'; then
-    echo -e "${GREEN}[PASS] iptables mangle rules injected${NC}"
+if $SSH_CMD 'iptables -t mangle -S FORWARD | grep -q -- "-i br+ .* -j ZAPRET" && iptables -t mangle -S ZAPRET | grep -q "NFQUEUE --queue-num 200"'; then
+    echo -e "${GREEN}[PASS] iptables mangle rules injected (br+ bridge wildcard)${NC}"
 else
     echo -e "${RED}[FAIL] iptables mangle rules missing${NC}"
     exit 1
@@ -203,8 +204,8 @@ else
 fi
 
 # Verify nat rules injected
-if $SSH_CMD 'iptables -t nat -S ZAPRET | grep -q "REDIRECT --to-ports 10080"'; then
-    echo -e "${GREEN}[PASS] iptables nat rules injected${NC}"
+if $SSH_CMD 'iptables -t nat -S PREROUTING | grep -q -- "-i br+ .* -j ZAPRET" && iptables -t nat -S ZAPRET | grep -q "REDIRECT --to-ports 10080"'; then
+    echo -e "${GREEN}[PASS] iptables nat rules injected (br+ bridge wildcard)${NC}"
 else
     echo -e "${RED}[FAIL] iptables nat redirect rules missing${NC}"
     exit 1
@@ -228,25 +229,31 @@ else
     exit 1
 fi
 
-# 11. Test WebUI
-echo "Testing WebUI slot and bind-mount..."
-# Start again to check mounts
+# 11. Test WebUI, self-heal on start, and syslog audit trail
+echo "Testing WebUI slot, self-heal, bind-mount, and syslog..."
+$SSH_CMD 'umount /www/require/modules/menuTree.js 2>/dev/null || umount -l /www/require/modules/menuTree.js 2>/dev/null || true; rm -f /tmp/var/wwwext/zapret/config.js'
 $SSH_CMD '/jffs/scripts/zapret start'
-$SSH_CMD '/jffs/scripts/zapret webui'
 
 MOUNT_ACTIVE=$($SSH_CMD 'mount | grep -c "/www/require/modules/menuTree.js"')
-if [ "$MOUNT_ACTIVE" -eq 1 ]; then
-    echo -e "${GREEN}[PASS] menuTree.js bind-mount active${NC}"
+if [ "$MOUNT_ACTIVE" -eq 1 ] && $SSH_CMD 'grep -q "tabName: \"Zapret\"" /www/require/modules/menuTree.js'; then
+    echo -e "${GREEN}[PASS] menuTree.js bind-mount active and self-healed on start${NC}"
 else
     echo -e "${RED}[FAIL] menuTree.js bind-mount not active${NC}"
     exit 1
 fi
 
-ASP_SLOT=$($SSH_CMD 'ls -l /tmp/var/wwwext/user*.asp | head -n 1 | awk "{print \$NF}"')
-if [ -n "$ASP_SLOT" ]; then
+ASP_SLOT=$($SSH_CMD 'grep -lx "Zapret" /tmp/var/wwwext/user*.title | head -n 1 | sed "s/\.title$/.asp/"')
+if [ -n "$ASP_SLOT" ] && $SSH_CMD "test -s '$ASP_SLOT' && test -s /tmp/var/wwwext/zapret/config.js && test -L /tmp/var/wwwext/zapret/hostlist.json"; then
     echo -e "${GREEN}[PASS] WebUI page mounted to slot: $ASP_SLOT${NC}"
 else
-    echo -e "${RED}[FAIL] No WebUI slot allocated${NC}"
+    echo -e "${RED}[FAIL] No valid WebUI slot or assets allocated${NC}"
+    exit 1
+fi
+
+if $SSH_CMD 'grep -q "zapret:" /tmp/syslog.log'; then
+    echo -e "${GREEN}[PASS] syslog lifecycle logging active${NC}"
+else
+    echo -e "${RED}[FAIL] No zapret syslog entries recorded${NC}"
     exit 1
 fi
 
