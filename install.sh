@@ -6,7 +6,22 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname -- "$0")" 2>/dev/null && pwd || pwd)"
+ONLINE_TMP=""
+
+cleanup() {
+    [ -n "$ONLINE_TMP" ] && rm -rf "$ONLINE_TMP"
+}
+trap cleanup EXIT
+
+if [ ! -f "$SCRIPT_DIR/zapret" ] || [ ! -d "$SCRIPT_DIR/binaries" ]; then
+    echo "Local package files not found; downloading latest release archive..."
+    ONLINE_TMP="/tmp/zapret-online-install.$$"
+    mkdir -p "$ONLINE_TMP"
+    curl -fsSL --retry 3 "https://github.com/tkiethuynh/zapret-asuswrt/releases/latest/download/zapret-merlin.tar.gz" -o "$ONLINE_TMP/zapret-merlin.tar.gz"
+    tar -xzf "$ONLINE_TMP/zapret-merlin.tar.gz" -C "$ONLINE_TMP"
+    SCRIPT_DIR="$ONLINE_TMP"
+fi
 
 echo "=== Zapret Asuswrt-Merlin Installer ==="
 
@@ -50,17 +65,11 @@ fi
 cp "$SCRIPT_DIR/userpage_zapret.asp" /jffs/addons/zapret/userpage_zapret.asp
 chmod 644 /jffs/addons/zapret/userpage_zapret.asp
 
-# 4. Copy control script and watchdog
+# 4. Copy control script
 echo "Installing control script to /jffs/scripts/zapret..."
 mkdir -p /jffs/scripts
 cp "$SCRIPT_DIR/zapret" /jffs/scripts/zapret
 chmod 755 /jffs/scripts/zapret
-
-if [ -f "$SCRIPT_DIR/zapret-watchdog" ]; then
-    echo "Installing watchdog to /jffs/scripts/zapret-watchdog..."
-    cp "$SCRIPT_DIR/zapret-watchdog" /jffs/scripts/zapret-watchdog
-    chmod 755 /jffs/scripts/zapret-watchdog
-fi
 
 # 5. Hook into boot scripts
 echo "Configuring boot script hooks..."
@@ -68,14 +77,19 @@ echo "Configuring boot script hooks..."
 add_hook() {
     local file="/jffs/scripts/$1"; shift
     [ -f "$file" ] || { echo "#!/bin/sh" > "$file"; chmod +x "$file"; }
-    grep -q "/jffs/scripts/zapret" "$file" && return 0
-    echo "" >> "$file"
-    for line in "$@"; do echo "$line" >> "$file"; done
-    echo "Hooked $(basename "$file")."
+    local added=0
+    for line in "$@"; do
+        if ! grep -Fqx "$line" "$file"; then
+            echo "$line" >> "$file"
+            added=1
+        fi
+    done
+    [ "$added" -eq 1 ] && echo "Hooked $(basename "$file")." || true
 }
 
-add_hook services-start "/jffs/scripts/zapret webui" "/jffs/scripts/zapret start"
-add_hook firewall-start "/jffs/scripts/zapret start"
+add_hook services-start "/jffs/scripts/zapret webui" "/jffs/scripts/zapret start &"
+add_hook firewall-start "/jffs/scripts/zapret start &"
+add_hook post-mount '[ -x "${1}/entware/bin/opkg" ] && [ -x /jffs/scripts/zapret ] && /jffs/scripts/zapret start &'
 
 # service-event hook
 if [ ! -f /jffs/scripts/service-event ]; then
@@ -84,9 +98,8 @@ if [ ! -f /jffs/scripts/service-event ]; then
 fi
 if ! grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event; then
     cat <<'EOF' >> /jffs/scripts/service-event
-
 if [ "$1" = "zapret" ] || [ "$2" = "zapret" ]; then
-    /jffs/scripts/zapret service_event
+    { /jffs/scripts/zapret service_event; } &
 fi
 EOF
     echo "Hooked service-event."
@@ -109,14 +122,16 @@ chmod 644 /jffs/addons/amtm/personalscript.conf
 echo "Added zapret as amtm personal script p1."
 if [ ! -f /jffs/addons/amtm/personal_script.mod ]; then
     echo "Downloading amtm personal_script.mod..."
-    curl -s -L --retry 3 "https://diversion.ch/amtm_fw/personal_script.mod" -o /jffs/addons/amtm/personal_script.mod || echo "Warning: failed to download amtm module."
+    if ! curl -fsSL --retry 3 "https://diversion.ch/amtm_fw/personal_script.mod" -o /jffs/addons/amtm/personal_script.mod; then
+        rm -f /jffs/addons/amtm/personal_script.mod
+        echo "Warning: failed to download amtm module."
+    fi
 fi
 
-# 7. Watchdog cron
-if [ -x /jffs/scripts/zapret-watchdog ] && [ -x /usr/sbin/cru ]; then
+# 7. Clean up legacy watchdog artifacts (if upgrading)
+rm -f /jffs/scripts/zapret-watchdog /tmp/zapret-watchdog.log
+if [ -x /usr/sbin/cru ]; then
     /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
-    /usr/sbin/cru a zapret_watchdog '* * * * * /jffs/scripts/zapret-watchdog'
-    echo "Enabled zapret watchdog cron."
 fi
 
 # 8. Initial configuration application

@@ -30,7 +30,7 @@ var config = window.zapret_config || {
     tpws_port: "10080",
     tpws_args: "--fooling=md5sig",
     nfqws_enabled: "0",
-    nfqws_args: "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
+    nfqws_args: "--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4",
     nfqws_queue: "200",
     hostlist_mode: "all"
 };
@@ -54,14 +54,15 @@ function initial() {
     $("#ui_tpws_args").val(config.tpws_args || "--fooling=md5sig");
     $("#ui_nfqws_queue").val(config.nfqws_queue || "200");
     var nfqws_args = config.nfqws_args || "";
-    if (nfqws_args === "" || nfqws_args === "--fooling=md5sig" || nfqws_args.indexOf("--dpi-desync") === -1) {
-        nfqws_args = "--dpi-desync=multisplit --dpi-desync-fooling=md5sig";
+    if (nfqws_args === "" || nfqws_args === "--fooling=md5sig") {
+        nfqws_args = "--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4";
     }
     $("#ui_nfqws_args").val(nfqws_args);
     $("#ui_hostlist_mode").val(config.hostlist_mode || "all");
     
     $.ajax({
         url: "/user/zapret/hostlist.json",
+        cache: false,
         dataType: "text",
         success: function(data) {
             $("#ui_hostlist_txt").val(data ? data.trim() : "");
@@ -208,18 +209,6 @@ function applyRule() {
 <input type="hidden" name="firmver" value="<% nvram_get("firmver"); %>">
 <input type="hidden" name="amng_custom" id="amng_custom" value="">
 
-<!-- Custom Settings hidden inputs -->
-<input type="hidden" name="zapret_enabled" id="zapret_enabled" value="">
-<input type="hidden" name="zapret_mode" id="zapret_mode" value="">
-<input type="hidden" name="zapret_tpws_enabled" id="zapret_tpws_enabled" value="">
-<input type="hidden" name="zapret_tpws_port" id="zapret_tpws_port" value="">
-<input type="hidden" name="zapret_tpws_args" id="zapret_tpws_args" value="">
-<input type="hidden" name="zapret_nfqws_enabled" id="zapret_nfqws_enabled" value="">
-<input type="hidden" name="zapret_nfqws_args" id="zapret_nfqws_args" value="">
-<input type="hidden" name="zapret_nfqws_queue" id="zapret_nfqws_queue" value="">
-<input type="hidden" name="zapret_hostlist_mode" id="zapret_hostlist_mode" value="">
-<input type="hidden" name="zapret_hostlist_raw" id="zapret_hostlist_raw" value="">
-
 <table class="content" align="center" cellpadding="0" cellspacing="0">
   <tr>
     <td width="17">&nbsp;</td>
@@ -313,7 +302,7 @@ function applyRule() {
                     <tr id="tr_nfqws_args">
                       <th>nfqws Arguments</th>
                       <td>
-                        <input type="text" id="ui_nfqws_args" class="input_32_table" style="width: 400px;" value="--dpi-desync=multisplit --dpi-desync-fooling=md5sig">
+                        <input type="text" id="ui_nfqws_args" class="input_32_table" style="width: 400px;" value="--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4">
                       </td>
                     </tr>
                   </table>

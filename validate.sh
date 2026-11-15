@@ -2,9 +2,9 @@
 set -eo pipefail
 
 # SSH config
-ROUTER_IP="192.168.9.1"
-ROUTER_PORT="61453"
-ROUTER_USER="tkiethuynh"
+ROUTER_IP="${ROUTER_IP:-192.168.9.1}"
+ROUTER_PORT="${ROUTER_PORT:-61453}"
+ROUTER_USER="${ROUTER_USER:-tkiethuynh}"
 SSH_CMD="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ROUTER_PORT $ROUTER_USER@$ROUTER_IP"
 
 # Colors for output
@@ -59,14 +59,24 @@ $SSH_CMD '
         chmod +x /jffs/scripts/service-event
     fi
     if [ -f /jffs/scripts/services-start ]; then
-        sed -i '\''/zapret/d'\'' /jffs/scripts/services-start
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/services-start
+        sed -i '\''/# Zapret WebUI mount, watchdog cron, and background start/d'\'' /jffs/scripts/services-start
     fi
     if [ -f /jffs/scripts/firewall-start ]; then
-        sed -i '\''/zapret/d'\'' /jffs/scripts/firewall-start
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/firewall-start
+    fi
+    if [ -f /jffs/scripts/post-mount ]; then
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/post-mount
     fi
     if [ -f /jffs/addons/amtm/personalscript.conf ]; then
-        sed -i '\''/zapret/d'\'' /jffs/addons/amtm/personalscript.conf
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/addons/amtm/personalscript.conf
     fi
+    for f in /jffs/scripts/service-event /jffs/scripts/services-start /jffs/scripts/firewall-start /jffs/scripts/post-mount; do
+        if [ -f "$f" ]; then
+            awk '\''NF { if (blank) print ""; print; blank=0; next } NR>1 { blank=1 }'\'' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+            chmod +x "$f"
+        fi
+    done
 '
 
 # 3. Upload files to router
@@ -112,10 +122,11 @@ echo "Verifying hook scripts..."
 HOOKS_PASS=true
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/services-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/firewall-start' || HOOKS_PASS=false
+$SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/post-mount' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event' || HOOKS_PASS=false
 $SSH_CMD 'test "$(head -n 1 /jffs/addons/amtm/personalscript.conf)" = "/jffs/scripts/zapret"' || HOOKS_PASS=false
-$SSH_CMD 'test -x /jffs/scripts/zapret-watchdog' || HOOKS_PASS=false
-$SSH_CMD '/usr/sbin/cru l | grep -q "zapret_watchdog"' || HOOKS_PASS=false
+$SSH_CMD '! test -e /jffs/scripts/zapret-watchdog' || HOOKS_PASS=false
+$SSH_CMD '! /usr/sbin/cru l 2>/dev/null | grep -q "zapret_watchdog"' || HOOKS_PASS=false
 
 if [ "$HOOKS_PASS" = true ]; then
     echo -e "${GREEN}[PASS] Boot and event hooks registered${NC}"
@@ -134,7 +145,7 @@ zapret_tpws_enabled 0
 zapret_tpws_port 10080
 zapret_tpws_args --fooling=md5sig
 zapret_nfqws_enabled 1
-zapret_nfqws_args --dpi-desync=multisplit --dpi-desync-fooling=md5sig
+zapret_nfqws_args --dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4
 zapret_nfqws_queue 200
 zapret_hostlist_mode custom
 zapret_hostlist_raw google.com,youtube.com
@@ -210,7 +221,7 @@ else
     exit 1
 fi
 
-if ! $SSH_CMD 'iptables -t nat -S 2>/dev/null | grep -q "ZAPRET"' && ! $SSH_CMD 'iptables -t mangle -S 2>/dev/null | grep -q "ZAPRET"'; then
+if ! $SSH_CMD 'iptables -t nat -S 2>/dev/null | grep -q "ZAPRET"' && ! $SSH_CMD 'iptables -t mangle -S 2>/dev/null | grep -q "ZAPRET"' && ! $SSH_CMD 'iptables -t mangle -S FORWARD 2>/dev/null | grep -q -- "--set-mss 1360"'; then
     echo -e "${GREEN}[PASS] iptables rules cleared${NC}"
 else
     echo -e "${RED}[FAIL] iptables rules still present after stop${NC}"
@@ -241,7 +252,7 @@ fi
 
 # 12. Test Simulated WebUI Apply (mimic human browser submission)
 echo "Testing simulated WebUI Apply (mimicking human browser action)..."
-JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=multisplit --dpi-desync-fooling=md5sig","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
+JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
 
 $SSH_CMD "echo '$JSON_PAYLOAD' | jq -r 'to_entries | .[] | \"\(.key) \(.value)\"' > /jffs/addons/custom_settings.txt"
 $SSH_CMD "/jffs/scripts/zapret service_event"
@@ -281,11 +292,15 @@ $SSH_CMD '
             sed -i "/^zapret_/d" /jffs/addons/custom_settings.txt 2>/dev/null || true
         fi
         
-        # Check if it was enabled and start
+        # Check if it was enabled and restart to reload restored config/hostlist
         enabled=$(grep -o "\"enabled\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" /jffs/addons/zapret/config.json | head -n 1 | cut -d'\''"'\'' -f4)
         if [ "$enabled" = "1" ]; then
-            /jffs/scripts/zapret start
+            /jffs/scripts/zapret restart
+        else
+            /jffs/scripts/zapret stop
         fi
+        /jffs/scripts/zapret webui
+        /jffs/scripts/zapret fix_perms
     else
         # Default disabled config if no backup existed
         cat <<EOF > /jffs/addons/zapret/config.json
@@ -296,7 +311,7 @@ $SSH_CMD '
   "tpws_port": "10080",
   "tpws_args": "--fooling=md5sig",
   "nfqws_enabled": "0",
-  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
+  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4",
   "nfqws_queue": "200",
   "hostlist_mode": "all"
 }

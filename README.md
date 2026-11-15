@@ -13,7 +13,6 @@ This package wraps bol-van's frozen Zapret C-binaries into a native Merlin-style
 - **Merlin WebUI Integration**: Dynamically injects a native administration tab right under the **WAN settings section** (after the NAT Passthrough tab) using a firmware-safe bind-mount of `menuTree.js`.
 - **amtm Integration**: Installs `/jffs/scripts/zapret` as the `amtm` personal scripts `p1` entry with an interactive status/control menu.
 - **Firewall Persistence**: Automatically handles firewall rule persistence across restarts, IP additions, and WAN updates.
-- **Watchdog Health Check**: Installs `/jffs/scripts/zapret-watchdog` and registers a once-per-minute `cru` job to reapply rules or restart the selected daemon when an active interception path becomes inconsistent.
 - **Automated Validation Loop**: Includes a comprehensive [validate.sh](validate.sh) testing script to perform automated verification of firewall rules, daemons, and slots.
 
 ---
@@ -33,8 +32,7 @@ This package wraps bol-van's frozen Zapret C-binaries into a native Merlin-style
 ├── install.sh               # System architecture-aware installer
 ├── userpage_zapret.asp      # Merlin-native configuration UI dashboard
 ├── validate.sh              # Automated E2E verification test suite
-├── zapret                   # Service daemon controller and amtm menu (/jffs/scripts/zapret)
-└── zapret-watchdog          # Health watchdog installed to /jffs/scripts/zapret-watchdog
+└── zapret                   # Service daemon controller and amtm menu (/jffs/scripts/zapret)
 ```
 
 ---
@@ -79,7 +77,6 @@ The daemon script `/jffs/scripts/zapret` supports the following commands:
 - `status`: Displays running state of daemons (with PIDs) and prints active iptables redirect rules.
 - `webui`: Regenerates slot mounts in `/tmp/var/wwwext/` and re-applies the `menuTree.js` bind-mount.
 - `fix_perms`: Re-applies safe permissions to zapret state and generated WebUI files.
-- `watchdog_enable` / `watchdog_disable`: Enables or disables the once-per-minute `cru` watchdog.
 - `menu` or no argument: Opens the interactive amtm-friendly zapret menu.
 
 ---

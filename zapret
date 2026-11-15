@@ -9,9 +9,39 @@ PID_DIR="/tmp/var/run"
 get_json_val() {
     local key="$1"
     local file="$2"
-    if [ -f "$file" ]; then
-        grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" | head -n 1 | cut -d'"' -f4
-    fi
+    [ -f "$file" ] || return 0
+    awk -v k="$key" '{
+        s = $0
+        pat = "\"" k "\"[[:space:]]*:[[:space:]]*\""
+        if (match(s, pat)) {
+            s = substr(s, RSTART + RLENGTH)
+            out = ""
+            while (length(s) > 0) {
+                c = substr(s, 1, 1)
+                if (c == "\\") {
+                    out = out substr(s, 2, 1)
+                    s = substr(s, 3)
+                } else if (c == "\"") {
+                    print out
+                    exit
+                } else {
+                    out = out c
+                    s = substr(s, 2)
+                }
+            }
+        }
+    }' "$file"
+}
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'
+}
+
+is_valid_port() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
 count_hosts() {
@@ -26,56 +56,6 @@ fix_perms() {
     chmod 755 /jffs/addons/zapret /tmp/var/wwwext/zapret 2>/dev/null || true
     chmod 644 /jffs/addons/zapret/* /jffs/addons/custom_settings.txt /tmp/var/wwwext/zapret/* 2>/dev/null || true
     echo "Permissions hardened."
-}
-
-watchdog() {
-    [ -f "$CONFIG_FILE" ] || return 0
-    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
-    [ "$enabled" = "1" ] || return 0
-    local mode=$(get_json_val "mode" "$CONFIG_FILE")
-    local log="/tmp/zapret-watchdog.log"
-    local daemon_name table
-
-    case "$mode" in
-        nfqws) daemon_name="nfqws"; table="mangle" ;;
-        tpws)  daemon_name="tpws";  table="nat" ;;
-        *) return 0 ;;
-    esac
-
-    local has_rules=0
-    iptables -t "$table" -S 2>/dev/null | grep -q -- '-j ZAPRET' && has_rules=1
-    local has_daemon=0
-    pidof "$daemon_name" >/dev/null 2>&1 && has_daemon=1
-
-    if [ "$has_rules" -eq 1 ] && [ "$has_daemon" -eq 0 ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') $daemon_name missing while ZAPRET rules active; restarting zapret" >> "$log"
-        start >> "$log" 2>&1
-    elif [ "$has_rules" -eq 0 ] && [ "$has_daemon" -eq 1 ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') $daemon_name running but ZAPRET $table hook missing; reapplying zapret" >> "$log"
-        start >> "$log" 2>&1
-    fi
-}
-
-watchdog_enable() {
-    if [ ! -x /jffs/scripts/zapret-watchdog ]; then
-        echo "Missing /jffs/scripts/zapret-watchdog" >&2
-        return 1
-    fi
-    if [ -x /usr/sbin/cru ]; then
-        /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
-        /usr/sbin/cru a zapret_watchdog '* * * * * /jffs/scripts/zapret-watchdog'
-        echo "Watchdog enabled: runs every minute."
-    else
-        echo "Error: cru not found; cannot register watchdog cron." >&2
-        return 1
-    fi
-}
-
-watchdog_disable() {
-    if [ -x /usr/sbin/cru ]; then
-        /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
-        echo "Watchdog disabled."
-    fi
 }
 
 start() {
@@ -151,15 +131,43 @@ start() {
     fi
 
     if [ "$mode" = "tpws" ]; then
+        if ! is_valid_port "$tpws_port"; then
+            echo "Error: Invalid tpws_port '$tpws_port'." >&2
+            return 1
+        fi
+
+        # Clean up opposing nfqws mode if switching directly via start
+        if pidof nfqws >/dev/null 2>&1 || iptables -t mangle -S ZAPRET >/dev/null 2>&1; then
+            killall nfqws 2>/dev/null || true
+            rm -f "$PID_DIR/zapret_nfqws.pid"
+            if [ -x /bin/runner ]; then
+                /bin/runner enable 2>/dev/null || true
+            fi
+        fi
+        iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+        iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t mangle -F ZAPRET 2>/dev/null || true
+        iptables -t mangle -X ZAPRET 2>/dev/null || true
+
         # Check if tpws is already running
         if pidof tpws >/dev/null 2>&1; then
             echo "tpws is already running."
         else
             echo "Starting tpws on port $tpws_port..."
             local tpws_args_processed=$(echo "$tpws_args" | sed 's/--fooling=[^ ]*//g')
-            /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/tmp/tpws.log 2>&1 &
+            set -f
+            /opt/bin/tpws --port="$tpws_port" --bind-addr=127.0.0.1 $hostlist_arg $tpws_args_processed >/tmp/tpws.log 2>&1 389>&- &
+            set +f
             echo $! > "$PID_DIR/zapret_tpws.pid"
             sleep 1
+        fi
+
+        if ! pidof tpws >/dev/null 2>&1; then
+            echo "Error: tpws failed to stay running. See /tmp/tpws.log" >&2
+            logger -t zapret "Error: tpws failed to stay running; aborting iptables REDIRECT setup."
+            rm -f "$PID_DIR/zapret_tpws.pid"
+            return 1
         fi
         
         # Apply iptables rules for tpws (nat redirect)
@@ -179,15 +187,38 @@ start() {
         iptables -t nat -I PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET
         
     elif [ "$mode" = "nfqws" ]; then
+        if ! is_valid_port "$nfqws_queue"; then
+            echo "Error: Invalid nfqws_queue '$nfqws_queue'." >&2
+            return 1
+        fi
+
+        # Clean up opposing tpws mode if switching directly via start
+        if pidof tpws >/dev/null 2>&1; then
+            killall tpws 2>/dev/null || true
+            rm -f "$PID_DIR/zapret_tpws.pid"
+        fi
+        iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
+        iptables -t nat -F ZAPRET 2>/dev/null || true
+        iptables -t nat -X ZAPRET 2>/dev/null || true
+
         # Check if nfqws is already running
         if pidof nfqws >/dev/null 2>&1; then
             echo "nfqws is already running."
         else
             echo "Starting nfqws on queue $nfqws_queue..."
             local nfqws_args_processed=$(echo "$nfqws_args" | sed 's/--fooling=/--dpi-desync-fooling=/g')
-            /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/tmp/nfqws.log 2>&1 &
+            set -f
+            /opt/bin/nfqws --qnum="$nfqws_queue" $hostlist_arg $nfqws_args_processed >/tmp/nfqws.log 2>&1 389>&- &
+            set +f
             echo $! > "$PID_DIR/zapret_nfqws.pid"
             sleep 1
+        fi
+
+        if ! pidof nfqws >/dev/null 2>&1; then
+            echo "Error: nfqws failed to stay running. See /tmp/nfqws.log" >&2
+            logger -t zapret "Error: nfqws failed to stay running; aborting iptables NFQUEUE setup."
+            rm -f "$PID_DIR/zapret_nfqws.pid"
+            return 1
         fi
         
         # Apply iptables rules for nfqws (mangle NFQUEUE)
@@ -209,7 +240,6 @@ start() {
         iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
 
         # Apply TCPMSS clamping rule to FORWARD chain (at top of chain) to prevent WAN MTU blackhole and nfqws EMSGSIZE errors
-        iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
         iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
     else
@@ -236,7 +266,8 @@ stop() {
     iptables -t nat -F ZAPRET 2>/dev/null
     iptables -t nat -X ZAPRET 2>/dev/null
     
-    iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+    iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
     iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
     iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null
     iptables -t mangle -F ZAPRET 2>/dev/null
@@ -320,7 +351,7 @@ webui() {
         cat /jffs/addons/zapret/config.json >> /tmp/var/wwwext/zapret/config.js
         echo ";" >> /tmp/var/wwwext/zapret/config.js
     else
-        echo "var zapret_config = {enabled: \"0\", mode: \"nfqws\", tpws_enabled: \"0\", tpws_port: \"10080\", tpws_args: \"--fooling=md5sig\", nfqws_enabled: \"0\", nfqws_args: \"--fooling=md5sig\", nfqws_queue: \"200\", hostlist_mode: \"all\"};" > /tmp/var/wwwext/zapret/config.js
+        echo "var zapret_config = {enabled: \"0\", mode: \"nfqws\", tpws_enabled: \"0\", tpws_port: \"10080\", tpws_args: \"--fooling=md5sig\", nfqws_enabled: \"0\", nfqws_args: \"--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4\", nfqws_queue: \"200\", hostlist_mode: \"all\"};" > /tmp/var/wwwext/zapret/config.js
     fi
     
     # Link hostlist file for WebUI access (using .json extension since .txt is blocked by httpd)
@@ -375,7 +406,7 @@ service_event() {
   "tpws_port": "10080",
   "tpws_args": "--fooling=md5sig",
   "nfqws_enabled": "0",
-  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig",
+  "nfqws_args": "--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4",
   "nfqws_queue": "200",
   "hostlist_mode": "all"
 }
@@ -413,18 +444,18 @@ EOF
         grep -v "^zapret_" /jffs/addons/custom_settings.txt > /tmp/custom_settings.txt.tmp
         mv /tmp/custom_settings.txt.tmp /jffs/addons/custom_settings.txt
         
-        # Rewrite config.json
+        # Rewrite config.json (escape values to preserve valid JSON/JS)
         cat <<EOF > "$CONFIG_FILE"
 {
-  "enabled": "${enabled}",
-  "mode": "${mode}",
-  "tpws_enabled": "${tpws_enabled}",
-  "tpws_port": "${tpws_port}",
-  "tpws_args": "${tpws_args}",
-  "nfqws_enabled": "${nfqws_enabled}",
-  "nfqws_args": "${nfqws_args}",
-  "nfqws_queue": "${nfqws_queue}",
-  "hostlist_mode": "${hostlist_mode}"
+  "enabled": "$(json_escape "$enabled")",
+  "mode": "$(json_escape "$mode")",
+  "tpws_enabled": "$(json_escape "$tpws_enabled")",
+  "tpws_port": "$(json_escape "$tpws_port")",
+  "tpws_args": "$(json_escape "$tpws_args")",
+  "nfqws_enabled": "$(json_escape "$nfqws_enabled")",
+  "nfqws_args": "$(json_escape "$nfqws_args")",
+  "nfqws_queue": "$(json_escape "$nfqws_queue")",
+  "hostlist_mode": "$(json_escape "$hostlist_mode")"
 }
 EOF
 
@@ -499,7 +530,7 @@ menu_row() {
 }
 
 amtm_menu_header() {
-    local enabled mode daemon watchdog
+    local enabled mode daemon
     enabled=$(get_json_val "enabled" "$CONFIG_FILE")
     mode=$(get_json_val "mode" "$CONFIG_FILE")
     [ -n "$mode" ] || mode="unknown"
@@ -512,12 +543,6 @@ amtm_menu_header() {
         daemon="stopped"
     fi
 
-    if [ -x /usr/sbin/cru ] && /usr/sbin/cru l 2>/dev/null | grep -q 'zapret_watchdog'; then
-        watchdog="on"
-    else
-        watchdog="off"
-    fi
-
     clear 2>/dev/null || true
     printf "%b╔══════════════════════════════════════════════════════╗%b\n" "$C_CYAN" "$C_RESET"
     printf "%b║%b  %bZapret Asuswrt-Merlin%b                         %b║%b\n" "$C_CYAN" "$C_RESET" "$C_BOLD$C_WHITE" "$C_RESET" "$C_CYAN" "$C_RESET"
@@ -526,10 +551,23 @@ amtm_menu_header() {
 
     printf "  Status   : "
     if [ "$enabled" = "1" ]; then badge "$C_BG_GREEN" "ENABLED"; else badge "$C_BG_RED" "DISABLED"; fi
-    printf "   Mode: %b%s%b   Daemon: %b%s%b\n" "$C_YELLOW" "$mode" "$C_RESET" "$C_YELLOW" "$daemon" "$C_RESET"
-    printf "  Watchdog : "
-    if [ "$watchdog" = "on" ]; then badge "$C_BG_GREEN" "ON"; else badge "$C_BG_RED" "OFF"; fi
-    printf "   Log: /tmp/zapret-watchdog.log\n\n"
+    printf "   Mode: %b%s%b   Daemon: %b%s%b\n\n" "$C_YELLOW" "$mode" "$C_RESET" "$C_YELLOW" "$daemon" "$C_RESET"
+}
+
+with_lock() {
+    local lockfile="/tmp/zapret.lock"
+    exec 389>"$lockfile"
+    flock -x 389
+    "$@"
+    local rc=$?
+    flock -u 389
+    exec 389>&-
+    return $rc
+}
+
+restart_service() {
+    stop
+    start
 }
 
 amtm_menu() {
@@ -542,27 +580,18 @@ amtm_menu() {
         menu_row "3"  "Stop zapret"          "stop daemons and remove rules"
         menu_row "4"  "Restart zapret"       "clean restart"
         menu_row "5"  "Re-inject WebUI"      "restore WAN tab after httpd restart"
-        printf "\n%b Watchdog & hardening%b\n" "$C_BOLD" "$C_RESET"
-        menu_row "6"  "Run watchdog now"     "one immediate health check"
-        menu_row "7"  "Enable watchdog"      "run every minute with cru"
-        menu_row "8"  "Disable watchdog"     "remove cru job"
-        menu_row "9"  "Watchdog log"         "show recent watchdog events"
-        menu_row "10" "Fix permissions"      "harden zapret files and WebUI cache"
+        menu_row "6"  "Fix permissions"      "harden zapret files and WebUI cache"
         printf "\n  %be%b    Exit\n" "$C_BG_BLUE" "$C_RESET"
         printf "\n%bChoose option:%b " "$C_BOLD" "$C_RESET"
         read choice
         echo
         case "$choice" in
             1) status ;;
-            2) start ;;
-            3) stop ;;
-            4) stop; start ;;
+            2) with_lock start ;;
+            3) with_lock stop ;;
+            4) with_lock restart_service ;;
             5) webui; fix_perms ;;
-            6) [ -x /jffs/scripts/zapret-watchdog ] && /jffs/scripts/zapret-watchdog || echo "Watchdog script missing" ;;
-            7) watchdog_enable ;;
-            8) watchdog_disable ;;
-            9) [ -f /tmp/zapret-watchdog.log ] && tail -n 50 /tmp/zapret-watchdog.log || echo "No watchdog log yet." ;;
-            10) fix_perms ;;
+            6) fix_perms ;;
             [Ee]) return 0 ;;
             *) echo "Invalid option." ;;
         esac
@@ -576,14 +605,13 @@ case "${1:-menu}" in
         amtm_menu
         ;;
     start)
-        start
+        with_lock start
         ;;
     stop)
-        stop
+        with_lock stop
         ;;
     restart)
-        stop
-        start
+        with_lock restart_service
         ;;
     status)
         status
@@ -592,22 +620,13 @@ case "${1:-menu}" in
         webui
         ;;
     service_event)
-        service_event
+        with_lock service_event
         ;;
     fix_perms)
         fix_perms
         ;;
-    watchdog)
-        watchdog
-        ;;
-    watchdog_enable)
-        watchdog_enable
-        ;;
-    watchdog_disable)
-        watchdog_disable
-        ;;
     *)
-        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms|watchdog|watchdog_enable|watchdog_disable}"
+        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms}"
         exit 1
         ;;
 esac
