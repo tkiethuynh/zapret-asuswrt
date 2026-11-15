@@ -119,7 +119,7 @@ iptables -t mangle -D OUTPUT -p tcp -m multiport --dports 80,443 \
 Safe to run over SSH: Merlin's SSH port is not 80/443, so these rules cannot lock you out.
 
 A control that times out with `tls=0.000000` (TCP completes, TLS does not) confirms
-**SNI/ClientHello-based DPI** — exactly what `--dpi-desync=split2` targets. If the control
+**SNI/ClientHello-based DPI** — exactly what `--dpi-desync=multisplit` targets. If the control
 *succeeds*, the site was not blocked in the first place and the test proves nothing.
 
 ### Troubleshooting: don't reach for a packet capture
@@ -172,11 +172,11 @@ bash validate.sh
 ```
 The test suite performs:
 1. SSH connectivity check.
-2. Clean environment teardown on the router.
+2. Clean environment teardown and config/hostlist backup on the router.
 3. Fresh binary copy and `personal_script.mod` module retrieval.
-4. Hook injection verification.
-5. End-to-end `nfqws` daemon start and firewall mangle rules verification.
-6. End-to-end `tpws` daemon start and firewall NAT redirect rules verification.
+4. Boot/event hook registration verification (including `services-start`, `firewall-start`, `post-mount`, and `service-event`).
+5. End-to-end `nfqws` daemon start and `-i br+` firewall `mangle` rules verification.
+6. End-to-end `tpws` daemon start and `-i br+` firewall NAT redirect rules verification.
 7. Graceful daemon stopping and firewall cleanup.
-8. WebUI slot rendering checks.
-9. Disables redirect routing and shuts down active daemons to keep your PC's connection uninterrupted.
+8. WebUI slot rendering, `menuTree.js` self-heal on `start`, and `syslog` lifecycle logging checks.
+9. Restores your backed-up configuration and restarts (or stops) `zapret` to match its original state.
