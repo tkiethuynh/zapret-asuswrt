@@ -40,6 +40,14 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'
 }
 
+get_wan_if() {
+    local wan_if
+    wan_if=$(nvram get wan0_gw_ifname 2>/dev/null)
+    [ -n "$wan_if" ] || wan_if=$(nvram get wan0_ifname 2>/dev/null)
+    [ -n "$wan_if" ] || wan_if="eth0"
+    echo "$wan_if"
+}
+
 is_valid_port() {
     case "$1" in
         ''|*[!0-9]*) return 1 ;;
@@ -73,11 +81,15 @@ log_err() {
 
 needs_zapret_stubby() {
     [ -x /usr/sbin/stubby ] || return 1
-    # If router's own Stubby is already running with an unfiltered DoT upstream (Cloudflare/Google/Quad9),
-    # dnsmasq's `server=/domain/#` already bypasses local blocklists (Diversion) over DoT without a 2nd daemon.
-    if [ -s /etc/stubby/stubby.yml ] && pidof stubby >/dev/null 2>&1; then
+    # Check persistent NVRAM DoT config (not `pidof stubby`, which is transiently stopped during `service restart_dnsmasq`).
+    # When router DoT uses an unfiltered upstream (Cloudflare/Google/Quad9), dnsmasq's `server=/domain/#`
+    # already bypasses Diversion over DoT without spawning a 2nd Stubby daemon.
+    if [ "$(nvram get dnspriv_enable 2>/dev/null)" = "1" ]; then
         local auths
-        auths=$(awk -F'"' '/tls_auth_name:/ {print $2}' /etc/stubby/stubby.yml 2>/dev/null)
+        auths=$(nvram get dnspriv_rulelist 2>/dev/null | awk -F'>' 'BEGIN{RS="<"} NF>=3 && $3!="" {print $3}')
+        if [ -z "$auths" ] && [ -s /etc/stubby/stubby.yml ]; then
+            auths=$(awk -F'"' '/tls_auth_name:/ {print $2}' /etc/stubby/stubby.yml 2>/dev/null)
+        fi
         if [ -n "$auths" ] && ! printf '%s\n' "$auths" | grep -Eivq '^(cloudflare-dns\.com|one\.one\.one\.one|dns\.google|dns\.quad9\.net)$'; then
             return 1
         fi
@@ -160,7 +172,8 @@ preseed_zapret_domains() {
         d=$(printf '%s' "$d" | tr -d '\r')
         case "$d" in ""|\#*) continue ;; esac
         nslookup "$d" 127.0.0.1 >/dev/null 2>&1 &
-        n=$((n + 1))
+        nslookup "www.$d" 127.0.0.1 >/dev/null 2>&1 &
+        n=$((n + 2))
         if [ "$n" -ge 8 ]; then
             wait
             n=0
@@ -310,7 +323,10 @@ start() {
                 /bin/runner enable 2>/dev/null || true
             fi
         fi
+        local wan_if
+        wan_if=$(get_wan_if)
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+        iptables -t mangle -D FORWARD -i br+ -o "$wan_if" -m mark ! --mark 0x1000/0x1000 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
         iptables -t mangle -D FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
@@ -409,9 +425,12 @@ start() {
         iptables -t mangle -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
         iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
 
-        # Apply TCPMSS clamping rule to FORWARD chain (at top of chain) to prevent WAN MTU blackhole and nfqws EMSGSIZE errors
+        # Apply TCPMSS clamping rule to WAN-egress FORWARD chain only (do not inflate wgc/tailscale tunnel MSS)
+        local wan_if
+        wan_if=$(get_wan_if)
         iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
-        iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
+        iptables -t mangle -D FORWARD -i br+ -o "$wan_if" -m mark ! --mark 0x1000/0x1000 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+        iptables -t mangle -I FORWARD 1 -i br+ -o "$wan_if" -m mark ! --mark 0x1000/0x1000 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
     else
         log_err "Unknown mode: $mode"
         return 1
@@ -481,7 +500,10 @@ stop() {
     iptables -t nat -F ZAPRET 2>/dev/null
     iptables -t nat -X ZAPRET 2>/dev/null
     
+    local wan_if
+    wan_if=$(get_wan_if)
     iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
+    iptables -t mangle -D FORWARD -i br+ -o "$wan_if" -m mark ! --mark 0x1000/0x1000 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null || true
     iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
     iptables -t mangle -D FORWARD -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t mangle -D FORWARD -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
