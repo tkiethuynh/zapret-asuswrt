@@ -287,11 +287,11 @@ else
     exit 1
 fi
 
-# Verify QUIC UDP/443 REJECT rule and dedicated DoT stubby helper
-if $SSH_CMD 'iptables -S FORWARD | grep -q -- "-p udp -m set --match-set zapret_domains dst -m udp --dport 443 -j REJECT" && ps | grep -v grep | grep -q "/tmp/zapret_stubby.yml"'; then
-    echo -e "${GREEN}[PASS] QUIC UDP/443 REJECT rule and DoT DNS helper active for zapret_domains${NC}"
+# Verify QUIC UDP/443 REJECT rule and dnsmasq override rules
+if $SSH_CMD 'iptables -S FORWARD | grep -q -- "-p udp -m set --match-set zapret_domains dst -m udp --dport 443 -j REJECT" && sleep 3 && grep -q "^ipset=.*/zapret_domains$" /etc/dnsmasq.conf && grep -q "^server=.*/medium.com/" /etc/dnsmasq.conf'; then
+    echo -e "${GREEN}[PASS] QUIC UDP/443 REJECT rule and dnsmasq DNS/ipset overrides active${NC}"
 else
-    echo -e "${RED}[FAIL] QUIC UDP/443 REJECT rule or DoT DNS helper missing${NC}"
+    echo -e "${RED}[FAIL] QUIC UDP/443 REJECT rule or dnsmasq override missing${NC}"
     exit 1
 fi
 

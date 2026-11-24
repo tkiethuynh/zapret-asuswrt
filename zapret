@@ -71,6 +71,20 @@ log_err() {
     logger -t zapret "$1" 2>/dev/null || true
 }
 
+needs_zapret_stubby() {
+    [ -x /usr/sbin/stubby ] || return 1
+    # If router's own Stubby is already running with an unfiltered DoT upstream (Cloudflare/Google/Quad9),
+    # dnsmasq's `server=/domain/#` already bypasses local blocklists (Diversion) over DoT without a 2nd daemon.
+    if [ -s /etc/stubby/stubby.yml ] && pidof stubby >/dev/null 2>&1; then
+        local auths
+        auths=$(awk -F'"' '/tls_auth_name:/ {print $2}' /etc/stubby/stubby.yml 2>/dev/null)
+        if [ -n "$auths" ] && ! printf '%s\n' "$auths" | grep -Eivq '^(cloudflare-dns\.com|one\.one\.one\.one|dns\.google|dns\.quad9\.net)$'; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
 is_zapret_stubby_running() {
     local pid
     if [ -f "$PID_DIR/zapret_stubby.pid" ]; then
@@ -165,10 +179,14 @@ dnsmasq_postconf() {
 
     if [ "$enabled" = "1" ] && [ "$hostlist_mode" = "custom" ] && [ ! -f "$PID_DIR/zapret_stopped" ] && [ -s /jffs/addons/zapret/hostlist.txt ]; then
         ipset -N zapret_domains hash:net 2>/dev/null || true
-        start_stubby
-        local has_stubby=0
-        [ -x /usr/sbin/stubby ] && has_stubby=1
-        awk -v use_stubby="$has_stubby" -v port="$ZAPRET_STUBBY_PORT" '
+        local upstream_target="#"
+        if needs_zapret_stubby; then
+            start_stubby
+            upstream_target="127.0.0.1#$ZAPRET_STUBBY_PORT"
+        else
+            stop_stubby
+        fi
+        awk -v target="$upstream_target" '
         NF && $1 !~ /^#/ {
             gsub(/\r/, "", $1)
             gsub(/^\.+/, "", $1)
@@ -177,7 +195,7 @@ dnsmasq_postconf() {
             buf = buf "/" $1
             c++
             if (c == 8) {
-                if (use_stubby == 1) print "server=" buf "/127.0.0.1#" port
+                print "server=" buf "/" target
                 print "ipset=" buf "/zapret_domains"
                 buf = ""
                 c = 0
@@ -185,11 +203,11 @@ dnsmasq_postconf() {
         }
         END {
             if (c > 0) {
-                if (use_stubby == 1) print "server=" buf "/127.0.0.1#" port
+                print "server=" buf "/" target
                 print "ipset=" buf "/zapret_domains"
             }
         }' /jffs/addons/zapret/hostlist.txt >> "$conf"
-        echo "1:custom:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')" > "$ZAPRET_DNSMASQ_STATE"
+        echo "1:custom:${upstream_target}:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')" > "$ZAPRET_DNSMASQ_STATE"
     else
         echo "${enabled:-0}:${hostlist_mode:-all}:none" > "$ZAPRET_DNSMASQ_STATE"
     fi
@@ -403,10 +421,16 @@ start() {
     local desired_state="1:${hostlist_mode}:none"
     if [ "$hostlist_mode" = "custom" ] && [ -s /jffs/addons/zapret/hostlist.txt ]; then
         ipset -N zapret_domains hash:net 2>/dev/null || true
-        start_stubby
+        local upstream_target="#"
+        if needs_zapret_stubby; then
+            start_stubby
+            upstream_target="127.0.0.1#$ZAPRET_STUBBY_PORT"
+        else
+            stop_stubby
+        fi
         iptables -C FORWARD -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT 2>/dev/null || \
             iptables -I FORWARD 1 -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT
-        desired_state="1:custom:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')"
+        desired_state="1:custom:${upstream_target}:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')"
     else
         iptables -D FORWARD -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT 2>/dev/null || true
         stop_stubby
