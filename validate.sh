@@ -26,18 +26,20 @@ fi
 # 2. Backup existing configuration and cleanup environment
 echo "Backing up existing configuration and resetting environment on router..."
 $SSH_CMD '
-    mkdir -p /tmp/zapret_backup
-    if [ -f /jffs/addons/zapret/config.json ]; then
-        cp /jffs/addons/zapret/config.json /tmp/zapret_backup/config.json
-    fi
-    if [ -f /jffs/addons/zapret/hostlist.txt ]; then
-        cp /jffs/addons/zapret/hostlist.txt /tmp/zapret_backup/hostlist.txt
-    fi
-    if [ -f /jffs/addons/zapret/hostlist.txt.bak ]; then
-        cp /jffs/addons/zapret/hostlist.txt.bak /tmp/zapret_backup/hostlist.txt.bak
-    fi
-    if [ -f /jffs/addons/custom_settings.txt ]; then
-        cp /jffs/addons/custom_settings.txt /tmp/zapret_backup/custom_settings.txt
+    if [ ! -d /tmp/zapret_backup ]; then
+        mkdir -p /tmp/zapret_backup
+        if [ -f /jffs/addons/zapret/config.json ]; then
+            cp /jffs/addons/zapret/config.json /tmp/zapret_backup/config.json
+        fi
+        if [ -f /jffs/addons/zapret/hostlist.txt ]; then
+            cp /jffs/addons/zapret/hostlist.txt /tmp/zapret_backup/hostlist.txt
+        fi
+        if [ -f /jffs/addons/zapret/hostlist.txt.bak ]; then
+            cp /jffs/addons/zapret/hostlist.txt.bak /tmp/zapret_backup/hostlist.txt.bak
+        fi
+        if [ -f /jffs/addons/custom_settings.txt ]; then
+            cp /jffs/addons/custom_settings.txt /tmp/zapret_backup/custom_settings.txt
+        fi
     fi
     
     /usr/sbin/cru d zapret_watchdog 2>/dev/null || true
@@ -68,10 +70,13 @@ $SSH_CMD '
     if [ -f /jffs/scripts/post-mount ]; then
         sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/post-mount
     fi
-    if [ -f /jffs/addons/amtm/personalscript.conf ]; then
-        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/addons/amtm/personalscript.conf
+    if [ -f /jffs/scripts/dnsmasq.postconf ]; then
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/dnsmasq.postconf
     fi
-    for f in /jffs/scripts/service-event /jffs/scripts/services-start /jffs/scripts/firewall-start /jffs/scripts/post-mount; do
+    if [ -f /jffs/addons/amtm/personalscript.conf ]; then
+        sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/scripts/amtm/personalscript.conf 2>/dev/null || sed -i '\''/\/jffs\/scripts\/zapret/d'\'' /jffs/addons/amtm/personalscript.conf
+    fi
+    for f in /jffs/scripts/service-event /jffs/scripts/services-start /jffs/scripts/firewall-start /jffs/scripts/post-mount /jffs/scripts/dnsmasq.postconf; do
         if [ -f "$f" ]; then
             awk '\''NF { if (blank) print ""; print; blank=0; next } NR>1 { blank=1 }'\'' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
             chmod +x "$f"
@@ -124,6 +129,7 @@ $SSH_CMD 'grep -Fqx "/jffs/scripts/zapret webui" /jffs/scripts/services-start' |
 $SSH_CMD '! grep -q "^/jffs/scripts/zapret start" /jffs/scripts/services-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/firewall-start' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/post-mount' || HOOKS_PASS=false
+$SSH_CMD 'grep -q "/jffs/scripts/zapret dnsmasq_postconf" /jffs/scripts/dnsmasq.postconf' || HOOKS_PASS=false
 $SSH_CMD 'grep -q "/jffs/scripts/zapret" /jffs/scripts/service-event' || HOOKS_PASS=false
 $SSH_CMD 'test "$(head -n 1 /jffs/addons/amtm/personalscript.conf)" = "/jffs/scripts/zapret"' || HOOKS_PASS=false
 $SSH_CMD '! test -e /jffs/scripts/zapret-watchdog' || HOOKS_PASS=false
@@ -257,9 +263,9 @@ else
     exit 1
 fi
 
-# 12. Test Simulated WebUI Apply (mimic human browser submission)
+# 12. Test Simulated WebUI Apply (mimic human browser submission including chunked hostlist & www normalization)
 echo "Testing simulated WebUI Apply (mimicking human browser action)..."
-JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hostlist_raw":"medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org,voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
+JSON_PAYLOAD='{"zapret_enabled":"1","zapret_mode":"nfqws","zapret_tpws_enabled":"0","zapret_tpws_port":"10080","zapret_tpws_args":"--fooling=md5sig","zapret_nfqws_enabled":"1","zapret_nfqws_args":"--dpi-desync=multisplit --dpi-desync-fooling=md5sig --dpi-desync-cutoff=d4","zapret_nfqws_queue":"200","zapret_hostlist_mode":"custom","zapret_hl_0":"www.medium.com,steampowered.com,steamcommunity.com,bbc.com,bbc.co.uk,rfa.org","zapret_hl_1":"voatiengviet.com,voanews.com,torproject.org,luatkhoa.org,vietnamthoibao.org,danluan.org"}'
 
 $SSH_CMD "echo '$JSON_PAYLOAD' | jq -r 'to_entries | .[] | \"\(.key) \(.value)\"' > /jffs/addons/custom_settings.txt"
 $SSH_CMD "/jffs/scripts/zapret service_event"
@@ -272,12 +278,20 @@ else
     exit 1
 fi
 
-# Verify hostlist populated correctly
+# Verify hostlist populated correctly (including chunk assembly and www. stripping)
 SIM_HOSTS=$($SSH_CMD 'cat /jffs/addons/zapret/hostlist.txt')
-if echo "$SIM_HOSTS" | grep -q "medium.com" && echo "$SIM_HOSTS" | grep -q "steampowered.com"; then
-    echo -e "${GREEN}[PASS] Simulated WebUI Apply generated correct hostlist.txt${NC}"
+if echo "$SIM_HOSTS" | grep -qx "medium.com" && echo "$SIM_HOSTS" | grep -qx "danluan.org" && ! echo "$SIM_HOSTS" | grep -q "^www\."; then
+    echo -e "${GREEN}[PASS] Simulated WebUI Apply assembled chunks and normalized www. prefix${NC}"
 else
-    echo -e "${RED}[FAIL] Simulated WebUI Apply hostlist verification failed${NC}"
+    echo -e "${RED}[FAIL] Simulated WebUI Apply hostlist verification failed: $SIM_HOSTS${NC}"
+    exit 1
+fi
+
+# Verify QUIC UDP/443 REJECT rule and dedicated DoT stubby helper
+if $SSH_CMD 'iptables -S FORWARD | grep -q -- "-p udp -m set --match-set zapret_domains dst -m udp --dport 443 -j REJECT" && ps | grep -v grep | grep -q "/tmp/zapret_stubby.yml"'; then
+    echo -e "${GREEN}[PASS] QUIC UDP/443 REJECT rule and DoT DNS helper active for zapret_domains${NC}"
+else
+    echo -e "${RED}[FAIL] QUIC UDP/443 REJECT rule or DoT DNS helper missing${NC}"
     exit 1
 fi
 

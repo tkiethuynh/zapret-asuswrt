@@ -5,6 +5,9 @@
 
 CONFIG_FILE="/jffs/addons/zapret/config.json"
 PID_DIR="/tmp/var/run"
+ZAPRET_STUBBY_CONF="/tmp/zapret_stubby.yml"
+ZAPRET_STUBBY_PORT="53535"
+ZAPRET_DNSMASQ_STATE="/tmp/zapret_dnsmasq.state"
 
 get_json_val() {
     local key="$1"
@@ -68,8 +71,133 @@ log_err() {
     logger -t zapret "$1" 2>/dev/null || true
 }
 
+is_zapret_stubby_running() {
+    local pid
+    if [ -f "$PID_DIR/zapret_stubby.pid" ]; then
+        pid=$(cat "$PID_DIR/zapret_stubby.pid" 2>/dev/null)
+        if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fq "$ZAPRET_STUBBY_CONF"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+start_stubby() {
+    [ -x /usr/sbin/stubby ] || return 0
+    mkdir -p "$PID_DIR" /tmp/var/zapret_stubby
+    if is_zapret_stubby_running; then
+        return 0
+    fi
+    cat <<EOF > "$ZAPRET_STUBBY_CONF"
+resolution_type: GETDNS_RESOLUTION_STUB
+dns_transport_list:
+  - GETDNS_TRANSPORT_TLS
+tls_authentication: GETDNS_AUTHENTICATION_REQUIRED
+tls_query_padding_blocksize: 128
+tls_ca_file: "/etc/ssl/certs/ca-certificates.crt"
+appdata_dir: "/tmp/var/zapret_stubby"
+edns_client_subnet_private: 1
+round_robin_upstreams: 1
+idle_timeout: 9000
+tls_connection_retries: 2
+tls_backoff_time: 300
+timeout: 2500
+limit_outstanding_queries: 500
+listen_addresses:
+  - 127.0.0.1@$ZAPRET_STUBBY_PORT
+upstream_recursive_servers:
+  - address_data: 1.1.1.1
+    tls_port: 853
+    tls_auth_name: "cloudflare-dns.com"
+  - address_data: 1.0.0.1
+    tls_port: 853
+    tls_auth_name: "cloudflare-dns.com"
+EOF
+    (
+        eval "exec 389>&-" 2>/dev/null || true
+        exec /usr/sbin/stubby -C "$ZAPRET_STUBBY_CONF" >/tmp/zapret_stubby.log 2>&1
+    ) &
+    echo $! > "$PID_DIR/zapret_stubby.pid"
+}
+
+stop_stubby() {
+    local pid p
+    if [ -f "$PID_DIR/zapret_stubby.pid" ]; then
+        pid=$(cat "$PID_DIR/zapret_stubby.pid" 2>/dev/null)
+        if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fq "$ZAPRET_STUBBY_CONF"; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$PID_DIR/zapret_stubby.pid"
+    fi
+    for p in /proc/[0-9]*/cmdline; do
+        [ -r "$p" ] || continue
+        if tr '\0' ' ' < "$p" 2>/dev/null | grep -Fq "$ZAPRET_STUBBY_CONF"; then
+            pid="${p#/proc/}"
+            pid="${pid%/cmdline}"
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
+preseed_zapret_domains() {
+    [ -s /jffs/addons/zapret/hostlist.txt ] || return 0
+    local n=0 d
+    while IFS= read -r d || [ -n "$d" ]; do
+        d=$(printf '%s' "$d" | tr -d '\r')
+        case "$d" in ""|\#*) continue ;; esac
+        nslookup "$d" 127.0.0.1 >/dev/null 2>&1 &
+        n=$((n + 1))
+        if [ "$n" -ge 8 ]; then
+            wait
+            n=0
+        fi
+    done < /jffs/addons/zapret/hostlist.txt
+    wait
+    [ -x /usr/sbin/conntrack ] && /usr/sbin/conntrack -D -p udp --dport 443 >/dev/null 2>&1 || true
+    [ -x /bin/fc ] && /bin/fc flush >/dev/null 2>&1 || true
+}
+
+dnsmasq_postconf() {
+    local conf="$1"
+    [ -n "$conf" ] && [ -f "$conf" ] || return 0
+    local enabled=$(get_json_val "enabled" "$CONFIG_FILE")
+    local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
+
+    if [ "$enabled" = "1" ] && [ "$hostlist_mode" = "custom" ] && [ ! -f "$PID_DIR/zapret_stopped" ] && [ -s /jffs/addons/zapret/hostlist.txt ]; then
+        ipset -N zapret_domains hash:net 2>/dev/null || true
+        start_stubby
+        local has_stubby=0
+        [ -x /usr/sbin/stubby ] && has_stubby=1
+        awk -v use_stubby="$has_stubby" -v port="$ZAPRET_STUBBY_PORT" '
+        NF && $1 !~ /^#/ {
+            gsub(/\r/, "", $1)
+            gsub(/^\.+/, "", $1)
+            gsub(/^www\./, "", $1)
+            if ($1 == "") next
+            buf = buf "/" $1
+            c++
+            if (c == 8) {
+                if (use_stubby == 1) print "server=" buf "/127.0.0.1#" port
+                print "ipset=" buf "/zapret_domains"
+                buf = ""
+                c = 0
+            }
+        }
+        END {
+            if (c > 0) {
+                if (use_stubby == 1) print "server=" buf "/127.0.0.1#" port
+                print "ipset=" buf "/zapret_domains"
+            }
+        }' /jffs/addons/zapret/hostlist.txt >> "$conf"
+        echo "1:custom:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')" > "$ZAPRET_DNSMASQ_STATE"
+    else
+        echo "${enabled:-0}:${hostlist_mode:-all}:none" > "$ZAPRET_DNSMASQ_STATE"
+    fi
+}
+
 start() {
     mkdir -p "$PID_DIR"
+    rm -f "$PID_DIR/zapret_stopped"
     
     if [ ! -f "$CONFIG_FILE" ]; then
         log_err "Configuration file $CONFIG_FILE not found. Cannot start."
@@ -91,6 +219,7 @@ start() {
             echo "Disabling Broadcom packet runner..."
             /bin/runner disable 2>/dev/null || true
         fi
+        [ -x /bin/fc ] && /bin/fc flush >/dev/null 2>&1 || true
     fi
     local tpws_port=$(get_json_val "tpws_port" "$CONFIG_FILE")
     local tpws_args=$(get_json_val "tpws_args" "$CONFIG_FILE")
@@ -269,10 +398,47 @@ start() {
         log_err "Unknown mode: $mode"
         return 1
     fi
+
+    # Sync custom hostlist DNS override (bypassing NextDNS/Diversion sinkholes via local DoT) and QUIC UDP/443 block
+    local desired_state="1:${hostlist_mode}:none"
+    if [ "$hostlist_mode" = "custom" ] && [ -s /jffs/addons/zapret/hostlist.txt ]; then
+        ipset -N zapret_domains hash:net 2>/dev/null || true
+        start_stubby
+        iptables -C FORWARD -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT 2>/dev/null || \
+            iptables -I FORWARD 1 -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT
+        desired_state="1:custom:$(md5sum /jffs/addons/zapret/hostlist.txt | awk '{print $1}')"
+    else
+        iptables -D FORWARD -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT 2>/dev/null || true
+        stop_stubby
+    fi
+
+    local cur_state=$(cat "$ZAPRET_DNSMASQ_STATE" 2>/dev/null)
+    if [ "$desired_state" != "$cur_state" ]; then
+        log_msg "Syncing dnsmasq and zapret_domains ipset (state=$desired_state)..."
+        (
+            eval "exec 389>&-" 2>/dev/null || true
+            [ "$hostlist_mode" = "custom" ] && ipset flush zapret_domains 2>/dev/null || true
+            service restart_dnsmasq >/dev/null 2>&1
+            sleep 2
+            if [ "$hostlist_mode" = "custom" ]; then
+                preseed_zapret_domains
+            fi
+        ) >/dev/null 2>&1 &
+    elif [ "$hostlist_mode" = "custom" ]; then
+        local ipset_entries=$(ipset list zapret_domains 2>/dev/null | grep -c '^[0-9]')
+        if [ "${ipset_entries:-0}" -eq 0 ]; then
+            (
+                eval "exec 389>&-" 2>/dev/null || true
+                preseed_zapret_domains
+            ) >/dev/null 2>&1 &
+        fi
+    fi
+
     log_msg "Zapret started successfully (mode=$mode, pids=$(pidof "$mode" 2>/dev/null))."
 }
 
 stop() {
+    local stop_mode="${1:-}"
     echo "Stopping Zapret processes..."
     killall tpws 2>/dev/null
     killall nfqws 2>/dev/null
@@ -285,6 +451,7 @@ stop() {
     fi
     
     echo "Cleaning up iptables rules..."
+    iptables -D FORWARD -m set --match-set zapret_domains dst -p udp --dport 443 -j REJECT 2>/dev/null || true
     iptables -t nat -D PREROUTING -i br+ -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t nat -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t nat -F ZAPRET 2>/dev/null
@@ -298,6 +465,18 @@ stop() {
     iptables -t mangle -D PREROUTING -i br0 -p tcp -m multiport --dports 80,443 -j ZAPRET 2>/dev/null || true
     iptables -t mangle -F ZAPRET 2>/dev/null
     iptables -t mangle -X ZAPRET 2>/dev/null
+
+    if [ "$stop_mode" = "full" ] || [ "$(get_json_val "enabled" "$CONFIG_FILE")" != "1" ]; then
+        mkdir -p "$PID_DIR"
+        touch "$PID_DIR/zapret_stopped"
+        stop_stubby
+        if grep -q "^1:custom:" "$ZAPRET_DNSMASQ_STATE" 2>/dev/null; then
+            (
+                eval "exec 389>&-" 2>/dev/null || true
+                service restart_dnsmasq >/dev/null 2>&1
+            ) &
+        fi
+    fi
     
     log_msg "Zapret stopped."
 }
@@ -451,6 +630,7 @@ EOF
         local nfqws_queue=$(get_json_val "nfqws_queue" "$CONFIG_FILE")
         local hostlist_mode=$(get_json_val "hostlist_mode" "$CONFIG_FILE")
         local hostlist_raw=""
+        local hl_chunks=""
         
         while read -r key val || [ -n "$key" ]; do
             case "$key" in
@@ -464,8 +644,13 @@ EOF
                 zapret_nfqws_queue) nfqws_queue="$val" ;;
                 zapret_hostlist_mode) hostlist_mode="$val" ;;
                 zapret_hostlist_raw) hostlist_raw="$val" ;;
+                zapret_hl_[0-9]*) hl_chunks="${hl_chunks},${val}" ;;
             esac
         done < /jffs/addons/custom_settings.txt
+
+        if [ -n "$hl_chunks" ]; then
+            hostlist_raw="${hostlist_raw},${hl_chunks}"
+        fi
         
         # Remove our keys from custom_settings.txt
         grep -v "^zapret_" /jffs/addons/custom_settings.txt > /tmp/custom_settings.txt.tmp
@@ -486,9 +671,9 @@ EOF
 }
 EOF
 
-        # Handle host list
+        # Handle host list (normalize leading/trailing dots and www. prefix so all subdomains match)
         if [ "$hostlist_mode" = "custom" ]; then
-            local parsed_hosts=$(echo "$hostlist_raw" | tr -d '\r' | tr ',' '\n' | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sed '/^$/d' | sort -u)
+            local parsed_hosts=$(echo "$hostlist_raw" | tr -d '\r' | tr ',' '\n' | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:].]*//' -e 's/[[:space:].]*$//' -e 's/^www\.//' | sed '/^$/d' | sort -u)
             local cur_hosts=$(count_hosts "/jffs/addons/zapret/hostlist.txt")
 
             if [ -n "$parsed_hosts" ]; then
@@ -616,7 +801,7 @@ amtm_menu() {
         case "$choice" in
             1) status ;;
             2) with_lock start ;;
-            3) with_lock stop ;;
+            3) with_lock stop full ;;
             4) with_lock restart_service ;;
             5) webui; fix_perms ;;
             6) fix_perms ;;
@@ -636,7 +821,7 @@ case "${1:-menu}" in
         with_lock start
         ;;
     stop)
-        with_lock stop
+        with_lock stop full
         ;;
     restart)
         with_lock restart_service
@@ -650,11 +835,14 @@ case "${1:-menu}" in
     service_event)
         with_lock service_event
         ;;
+    dnsmasq_postconf)
+        dnsmasq_postconf "$2"
+        ;;
     fix_perms)
         fix_perms
         ;;
     *)
-        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|fix_perms}"
+        echo "Usage: $0 {menu|start|stop|restart|status|webui|service_event|dnsmasq_postconf|fix_perms}"
         exit 1
         ;;
 esac

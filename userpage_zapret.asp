@@ -158,7 +158,9 @@ function applyRule() {
                 }
                 cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
                 cleaned = cleaned.split(/[/?#:]/)[0];
-                return cleaned.trim().toLowerCase();
+                cleaned = cleaned.trim().toLowerCase();
+                cleaned = cleaned.replace(/^\.+/, "").replace(/^www\./, "").replace(/\.+$/, "");
+                return cleaned;
             })
             .filter(function(line) { return line.length > 0; })
             .filter(function(value, index, self) { return self.indexOf(value) === index; })
@@ -169,9 +171,13 @@ function applyRule() {
                 return;
             }
         }
+        if (cleanList.length > 7200) {
+            alert("Host list is too large for Asuswrt-Merlin WebUI storage (" + cleanList.length + " / 7200 chars). Please edit /jffs/addons/zapret/hostlist.txt via SSH for bulk lists.");
+            return;
+        }
     }
     
-    // Package custom settings into the required amng_custom JSON variable
+    // Package custom settings into amng_custom JSON (chunk hostlist <= 2400 chars to stay under httpd 2999-char value limit)
     var post_settings = {};
     post_settings["zapret_enabled"] = enabled;
     post_settings["zapret_mode"] = mode;
@@ -182,7 +188,27 @@ function applyRule() {
     post_settings["zapret_nfqws_args"] = $("#ui_nfqws_args").val();
     post_settings["zapret_nfqws_queue"] = $("#ui_nfqws_queue").val();
     post_settings["zapret_hostlist_mode"] = hostlistMode;
-    post_settings["zapret_hostlist_raw"] = cleanList;
+
+    if (cleanList.length <= 2400) {
+        post_settings["zapret_hostlist_raw"] = cleanList;
+    } else {
+        var items = cleanList.split(",");
+        var chunkIdx = 0;
+        var buf = "";
+        for (var i = 0; i < items.length; i++) {
+            var next = buf.length === 0 ? items[i] : (buf + "," + items[i]);
+            if (next.length > 2400 && buf.length > 0) {
+                post_settings["zapret_hl_" + chunkIdx] = buf;
+                chunkIdx++;
+                buf = items[i];
+            } else {
+                buf = next;
+            }
+        }
+        if (buf.length > 0) {
+            post_settings["zapret_hl_" + chunkIdx] = buf;
+        }
+    }
     
     document.getElementById('amng_custom').value = JSON.stringify(post_settings);
     

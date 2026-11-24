@@ -100,9 +100,25 @@ if [ -f /jffs/scripts/services-start ]; then
     sed -i '/^\/jffs\/scripts\/zapret start[[:space:]]*&\?$/d' /jffs/scripts/services-start 2>/dev/null || true
 fi
 
+# Clean legacy inline zapret ipset/QUIC snippets now managed directly by /jffs/scripts/zapret
+if [ -f /jffs/scripts/firewall-start ]; then
+    sed -i '/# Block QUIC for Zapret domains/d' /jffs/scripts/firewall-start 2>/dev/null || true
+    sed -i '/--match-set zapret_domains dst -p udp --dport 443 -j REJECT/d' /jffs/scripts/firewall-start 2>/dev/null || true
+fi
+if [ -f /jffs/scripts/dnsmasq.postconf ]; then
+    awk '
+    /# Sync Zapret QUIC-block ipset lines from hostlist\.txt/ { skip=1; next }
+    skip && /^fi[[:space:]]*$/ { skip=0; next }
+    skip { next }
+    { print }
+    ' /jffs/scripts/dnsmasq.postconf > /tmp/dnsmasq.postconf.zapret && mv /tmp/dnsmasq.postconf.zapret /jffs/scripts/dnsmasq.postconf
+    chmod +x /jffs/scripts/dnsmasq.postconf
+fi
+
 add_hook services-start "/jffs/scripts/zapret webui"
 add_hook firewall-start "/jffs/scripts/zapret start &"
 add_hook post-mount '[ -x "${1}/entware/bin/opkg" ] && [ -x /jffs/scripts/zapret ] && /jffs/scripts/zapret start &'
+add_hook dnsmasq.postconf '/jffs/scripts/zapret dnsmasq_postconf "$1"'
 
 # service-event hook
 if [ ! -f /jffs/scripts/service-event ]; then
